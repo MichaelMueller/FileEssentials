@@ -49,9 +49,9 @@ class DragDropListWidget(QListWidget):
             e.accept()
             # Workaround for OSx dragging and dropping
             for url in e.mimeData().urls():
-                fname = str(url.toLocalFile())
-
-                self.addItem(fname)
+                file_name = str(url.toLocalFile())
+                if os.path.isfile(file_name):
+                    self.addItem(file_name)
         else:
             e.ignore()
 
@@ -121,8 +121,6 @@ class CentralWidget(QWidget):
         central_widget_layout.addLayout(dir_chooser_layout)
         central_widget_layout.addWidget(self.file_list)
         central_widget_layout.addWidget(self.file_list_action_bar_widget)
-        central_widget_layout.addWidget(self.output_file_widget)
-        central_widget_layout.addWidget(self.merge_button)
         self.setLayout(central_widget_layout)
         self.setAcceptDrops(True)
 
