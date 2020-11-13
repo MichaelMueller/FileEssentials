@@ -1,7 +1,5 @@
 fbs
-PyPDF2
 PyQt5
 PyQt5-stubs
 PyQtWebEngine
 QDarkStyle
-img2pdf

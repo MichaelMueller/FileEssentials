@@ -5,16 +5,17 @@ import shutil
 import subprocess
 import tempfile
 import traceback
-
-# import img2pdf
-import img2pdf
-from PyPDF2 import PdfFileMerger
-from PyQt5 import QtCore, QtGui
+from PyQt5 import QtCore
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPalette, QPainter, QBrush, QColor, QPen
 from PyQt5.QtWidgets import QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, \
-    QListWidget, QFileDialog, QAbstractItemView, QMessageBox, QProgressDialog, QApplication
-from qtpy import QtWebEngineWidgets
+    QListWidget, QFileDialog, QAbstractItemView, QMessageBox, QProgressDialog, QApplication, QLabel, QTextEdit, \
+    QSplitter, QGroupBox
+
+from PyQt5.QtWidgets import QMainWindow
+from fbs_runtime.application_context.PyQt5 import ApplicationContext
+import sys
+import fe_interfaces
+import fe_model
 
 
 class DragDropListWidget(QListWidget):
@@ -60,6 +61,93 @@ class CentralWidget(QWidget):
     def __init__(self, parent=None):
         QWidget.__init__(self, parent)
         # build gui
+
+        # left_widget
+        left_widget = FilePathsWidget(self)
+
+        # right_widget
+        filters_widget = FilesFunctionWidget("Filters")
+        filters_widget.add_files_function(fe_model.NoneFilter())
+        filters_widget.add_files_function(fe_model.NoneFilter())
+        processors_widget = FilesFunctionWidget("Processors")
+        processors_widget.add_files_function(fe_model.NoneProcessor())
+        processors_widget.add_files_function(fe_model.NoneProcessor())
+        console_widget = QTextEdit("")
+        right_layout = QVBoxLayout()
+        right_layout.setContentsMargins(0, 0, 0, 0);
+        right_layout.addWidget(filters_widget)
+        right_layout.addWidget(processors_widget)
+        right_layout.addWidget(console_widget)
+        right_widget = QWidget()
+        right_widget.setLayout(right_layout)
+
+        # splitter
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_widget)
+
+        # self layout
+        layout = QVBoxLayout()
+        layout.addWidget(splitter)
+        self.setLayout(layout)
+
+
+class FilesFunctionWidget(QWidget):
+    def __init__(self, headline, parent=None):
+        QWidget.__init__(self, parent)
+
+        # left_widget
+        self.filesFunctions = []  # List[fe_interfaces.FilesFunction]
+
+        # build gui
+        self.box = QGroupBox(headline)
+        self.build_box_layout()
+
+        # self layout
+        layout = QVBoxLayout()
+        layout.addWidget(self.box)
+        self.setLayout(layout)
+
+    def add_files_function(self, filesFunction: fe_interfaces.FilesFunction):
+        self.filesFunctions.append(filesFunction)
+        self.build_box_layout()
+
+    def build_box_layout(self):
+        if self.box.layout():
+            QWidget().setLayout(self.box.layout())
+        layout = QVBoxLayout()
+        if len(self.filesFunctions) == 0:
+            label = QLabel("None")
+            inner_layout = QHBoxLayout()
+            inner_layout.addWidget(label)
+            layout.addLayout(inner_layout)
+        else:
+            for filesFunction in self.filesFunctions:
+                label = QLabel(filesFunction.to_String())
+                remove_button = QPushButton("\u2796")
+                remove_button.setStyleSheet("font-size: 18px; font-weight: bold")
+                edit_button = QPushButton("\u270E")
+                edit_button.setStyleSheet("font-size: 18px; font-weight: bold")
+                inner_layout = QHBoxLayout()
+                inner_layout.addWidget(label)
+                inner_layout.addWidget(remove_button)
+                inner_layout.addWidget(edit_button)
+                inner_layout.addStretch(1)
+                layout.addLayout(inner_layout)
+
+        add_button = QPushButton("\u2795")
+        add_button.setStyleSheet("font-size: 18px; font-weight: bold")
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(add_button)
+        button_layout.addStretch(1)
+        layout.addLayout(button_layout)
+
+        self.box.setLayout(layout)
+
+class FilePathsWidget(QWidget):
+    def __init__(self, parent=None):
+        QWidget.__init__(self, parent)
+        # build gui
         # the dir chooser
         add_files_button = QPushButton('Add files')
         add_files_button.clicked.connect(self.add_files_button_clicked)
@@ -100,40 +188,25 @@ class CentralWidget(QWidget):
         self.file_list_action_bar_widget = QWidget()
         self.file_list_action_bar_widget.setLayout(file_list_action_bar_layout)
 
-        # the output_file_chooser
-        self.output_file_line_edit = QLineEdit()
-        output_file_change_button = QPushButton('Change Output File')
-        output_file_change_button.clicked.connect(self.output_file_change_button_clicked)
-        output_file_layout = QHBoxLayout()
-        output_file_layout.setContentsMargins(0, 0, 0, 0)
-        output_file_layout.addWidget(self.output_file_line_edit)
-        output_file_layout.addWidget(output_file_change_button)
-        self.output_file_widget = QWidget()
-        self.output_file_widget.setLayout(output_file_layout)
-        self.output_file_widget.setEnabled(False)
-
-        # run button
-        self.merge_button = QPushButton('Merge Files')
-        self.merge_button.setEnabled(False)
-        self.merge_button.clicked.connect(self.merge_button_clicked)
-
         central_widget_layout = QVBoxLayout()
         central_widget_layout.addLayout(dir_chooser_layout)
         central_widget_layout.addWidget(self.file_list)
         central_widget_layout.addWidget(self.file_list_action_bar_widget)
-        self.setLayout(central_widget_layout)
+
+        box_layout = QVBoxLayout()
+        box_layout.addLayout(central_widget_layout)
+        box = QGroupBox("Files")
+        box.setLayout(box_layout)
+
+        layout = QVBoxLayout()
+        layout.addWidget(box)
+        self.setLayout(layout)
         self.setAcceptDrops(True)
 
-        self.progress_dialog = None
-
         # conversion state
-        self.files_to_be_converted = []
         self.tmp_dir = None
         self.current_file_idx = -1
         self.tmp_files = []
-
-    def get_supported_files(self):
-        return [".pdf", ".jpeg", ".jpg", ".bmp", ".html"]
 
     def file_list_model_rows_removed(self):
         self.remove_all_button.setEnabled(self.file_list.count() > 0)
@@ -166,7 +239,7 @@ class CentralWidget(QWidget):
             self.tmp_files.append(tmp_file_path)
             if file_ext in [".jpeg", ".jpg", ".bmp"]:
                 with open(tmp_file_path, "wb") as f:
-                    f.write(img2pdf.convert(file_path))
+                    pass
                 self.convert_next_file()
             elif file_ext in [".pdf"]:
                 shutil.copy2(file_path, tmp_file_path)
@@ -186,7 +259,7 @@ class CentralWidget(QWidget):
                 loader.loadFinished.connect(emit_pdf)
         else:
             # do the merge
-            merger = PdfFileMerger()
+            merger = None
 
             for file in self.tmp_files:
                 merger.append(file)
@@ -261,7 +334,7 @@ class CentralWidget(QWidget):
             self.remove_file_button.setEnabled(False)
         else:
             self.remove_file_button.setEnabled(True)
-            self.move_down_button.setEnabled(len(list_items)  == 1)
+            self.move_down_button.setEnabled(len(list_items) == 1)
             self.move_up_button.setEnabled(len(list_items) == 1)
 
     def add_files_button_clicked(self):
@@ -286,7 +359,6 @@ class CentralWidget(QWidget):
             if len(files) > 0:
                 # self.file_list.setEnabled(True)
                 self.output_file_widget.setEnabled(True)
-
 
     def remove_file_button_clicked(self):
         list_items = self.file_list.selectedItems()
@@ -345,3 +417,24 @@ class CentralWidget(QWidget):
             os.startfile(filepath)
         else:  # linux variants
             subprocess.call(('xdg-open', filepath))
+
+
+def start():
+    # 1. Instantiate ApplicationContext
+    app_context = ApplicationContext()
+
+    # qmainwindow
+    version = app_context.build_settings['version']
+    app_name = app_context.build_settings['app_name']
+    window_title = app_name + " v" + version
+    window = QMainWindow()
+    window.setWindowTitle(window_title)
+    window.setCentralWidget(CentralWidget())
+    window.resize(800, 600)
+    window.showMaximized()
+    # window.show()
+
+    # run
+    # app_context.app.setStyleSheet(qdarkstyle.load_stylesheet())
+    exit_code = app_context.app.exec_()  # 2. Invoke app_context.app.exec_()
+    sys.exit(exit_code)
