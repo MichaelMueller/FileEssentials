@@ -10,6 +10,13 @@ from inspect import getframeinfo, stack, getmembers, isfunction
 
 
 # Classes
+class Property:
+    def __init__(self, name, default=None):
+        self.name = name
+        self.value = None
+        self.help = None
+
+
 class Args(interfaces.Args):
 
     def __init__(self, args: Dict):
@@ -178,11 +185,12 @@ class PipelineSerializer:
         else:
             return "{0}.{1}".format(obj.__class__.__module__, obj.__class__.__name__)
 
-    def instance_to_dict(self, obj)->Dict:
+    def instance_to_dict(self, obj) -> Dict:
         dic = {}
         dic["class"] = self.get_class(obj)
         dic["properties"] = obj.__dict__
         return dic
+
 
 class PipelineUnserializer:
     def __init__(self, log: interfaces.Log):

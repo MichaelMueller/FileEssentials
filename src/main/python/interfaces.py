@@ -29,6 +29,17 @@ class Log:
         pass
 
 
+class SelfDescribingObject:
+
+    @abc.abstractmethod
+    def property_names(self):
+        return None
+
+    @abc.abstractmethod
+    def property_(self):
+        return None
+
+
 class Source:
     @abc.abstractmethod
     def get(self, log: Log) -> List[str]:
@@ -45,3 +56,22 @@ class Processor:
     @abc.abstractmethod
     def process(self, files: List[str], log: Log):
         return None
+
+
+class Property:
+    pass
+
+
+class Functor:
+
+    @abc.abstractmethod
+    def inputs(self) -> List[Property]:
+        return None
+
+    @abc.abstractmethod
+    def outputs(self) -> List[Property]:
+        return None
+
+    @abc.abstractmethod
+    def run(self, log: Log):
+        pass
