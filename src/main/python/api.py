@@ -93,13 +93,12 @@ class Log:
 
 
 class DirReader(interfaces.Source):
-    def __init__(self, directory, log: interfaces.Log, recursive=True):
+    def __init__(self, directory, recursive=True):
         self.directory = directory
         self.recursive = recursive
-        self.log = log
 
-    def get(self):
-        self.log.info("reading from directory {}".format(self.directory))
+    def get(self, log: Log):
+        log.info("reading from directory {}".format(self.directory))
         files = []
         for directory, sub_directories, file_names in os.walk(self.directory):
             for sub_directory in sub_directories:
@@ -114,11 +113,8 @@ class DirReader(interfaces.Source):
 
 
 class FileFilter(interfaces.Filter):
-    def __init__(self, log: interfaces.Log):
-        self.log = log
-
-    def filter(self, files: List[str]) -> List[str]:
-        self.log.info("filtering for files only")
+    def filter(self, files: List[str], log: interfaces.Log) -> List[str]:
+        log.info("filtering for files only")
         filtered_files = []
         for file in files:
             if os.path.isfile(file):
@@ -127,35 +123,30 @@ class FileFilter(interfaces.Filter):
 
 
 class FileSizeCalculator(interfaces.Processor):
-    def __init__(self, log: interfaces.Log):
-        self.log = log
-        self.file_size = None
-
-    def process(self, files: List[str]):
-        self.log.info("collecting file size")
-        self.file_size = 0
+    def process(self, files: List[str], log: interfaces.Log):
+        log.info("collecting file size")
+        file_size = 0
         for file in files:
-            self.file_size = self.file_size + os.path.getsize(file)
+            file_size = file_size + os.path.getsize(file)
 
-        self.log.info("number of files: {}, size: {} MB".format(len(files), round(self.file_size / (1024 * 1024), 3)))
-        return self.file_size
+        log.info("number of files: {}, size: {} MB".format(len(files), round(file_size / (1024 * 1024), 3)))
+        return file_size
 
 
 class Pipeline:
-    def __init__(self, source: interfaces.Source, log: interfaces.Log):
-        self.log = log
+    def __init__(self, source: interfaces.Source):
         self.source = source  # type: interfaces.Source
         self.filters = []  # type: List[interfaces.Filter]
         self.processors = []  # type: List[interfaces.Processor]
 
-    def __call__(self):
-        self.log.info("starting pipeline")
+    def exec(self, log: interfaces.Log):
+        log.info("starting pipeline")
         results = []
-        files = self.source.get()
+        files = self.source.get(log)
         for files_filter in self.filters:
-            files = files_filter.filter(files)
+            files = files_filter.filter(files, log)
         for processor in self.processors:
-            results.append(processor.process(files))
+            results.append(processor.process(files, log))
         return results
 
 
@@ -165,13 +156,13 @@ class PipelineSerializer:
 
     def to_dict(self, pipeline: Pipeline):
         dictionary = {}
-        dictionary["source"] = self.get_class(pipeline.source)
+        dictionary["source"] = self.instance_to_dict(pipeline.source)
         dictionary["filters"] = []
         for files_filter in pipeline.filters:
-            dictionary["filters"].append(self.get_class(files_filter))
+            dictionary["filters"].append(self.instance_to_dict(files_filter))
         dictionary["processors"] = []
         for processor in pipeline.processors:
-            dictionary["processors"].append(self.get_class(processor))
+            dictionary["processors"].append(self.instance_to_dict(processor))
         return dictionary
 
     def save_to_json_file(self, file_path: str, pipeline: Pipeline):
@@ -187,22 +178,29 @@ class PipelineSerializer:
         else:
             return "{0}.{1}".format(obj.__class__.__module__, obj.__class__.__name__)
 
+    def instance_to_dict(self, obj)->Dict:
+        dic = {}
+        dic["class"] = self.get_class(obj)
+        dic["properties"] = obj.__dict__
+        return dic
 
 class PipelineUnserializer:
     def __init__(self, log: interfaces.Log):
         self.log = log
 
     def from_dict(self, dictionary: Dict):
-        pipeline = Pipeline(self.create_instance(dictionary["source"]), self.log)
+        pipeline = Pipeline(self.dict_to_instance(dictionary["source"]))
 
         for files_filter in dictionary["filters"]:
-            pipeline.filters.append(self.create_instance(files_filter))
+            pipeline.filters.append(self.dict_to_instance(files_filter))
         for processor in dictionary["processors"]:
-            pipeline.processors.append(self.create_instance(processor))
+            pipeline.processors.append(self.dict_to_instance(processor))
 
-    def create_instance(self, name):
-        klass = globals()[name]
-        instance = klass(self.log)
+        return pipeline
+
+    def dict_to_instance(self, dictionary: Dict):
+        klass = globals()[dictionary["class"]]
+        instance = klass(**dictionary["properties"])
         return instance
 
     def load_from_json_file(self, file_path: str):
@@ -216,10 +214,10 @@ class FileEssentials:
 
     def sandbox(self, args: interfaces.Args, log: interfaces.Log) -> int:
         # build pipeline
-        pipeline = Pipeline(DirReader(os.getcwd(), log), log)
-        pipeline.filters.append(FileFilter(log))
-        pipeline.processors.append(FileSizeCalculator(log))
-        pipeline()
+        pipeline = Pipeline(DirReader(os.getcwd()))
+        pipeline.filters.append(FileFilter())
+        pipeline.processors.append(FileSizeCalculator())
+        pipeline.exec(log)
 
         # serialize
         temp_name = os.path.join(tempfile.gettempdir(), next(tempfile._get_candidate_names()))
@@ -231,7 +229,7 @@ class FileEssentials:
         # unserialize
         unserializer = PipelineUnserializer(log)
         pipeline_copy = unserializer.load_from_json_file(temp_name)
-        pipeline_copy()
+        pipeline_copy.exec(log)
 
         return 0
 

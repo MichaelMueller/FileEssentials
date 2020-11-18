@@ -31,17 +31,17 @@ class Log:
 
 class Source:
     @abc.abstractmethod
-    def get(self) -> List[str]:
+    def get(self, log: Log) -> List[str]:
         return None
 
 
 class Filter:
     @abc.abstractmethod
-    def filter(self, files: List[str]) -> List[str]:
+    def filter(self, files: List[str], log: Log) -> List[str]:
         return None
 
 
 class Processor:
     @abc.abstractmethod
-    def process(self, files: List[str]):
+    def process(self, files: List[str], log: Log):
         return None
