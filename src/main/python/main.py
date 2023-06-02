@@ -1,5 +1,6 @@
 # sys imports
 import sys, os, datetime, abc
+from typing import Union
 
 # pip imports
 from PyQt5 import QtCore
@@ -9,52 +10,45 @@ from PyQt5.QtWidgets import QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QLin
     QSplitter, QGroupBox, QMainWindow, QComboBox, QMdiArea
 
 # interfaces and abstract classes    
-class FileFilter:    
-    @abc.abstractclassmethod
-    def use_file( self, file_path:str ) -> bool:
-        raise NotImplementedError()
-    
-class FileProcessor:    
-    @abc.abstractclassmethod
-    def process( self, file_path:str ) -> bool:
-        raise NotImplementedError()
-    
-class FileEssentialsWidget(QWidget):
-    def __init__(self, parent=None):
-        QWidget.__init__(self, parent)
-
+class FileEssentialsObject:  
     @abc.abstractclassmethod
     def name( self ) -> str:
         raise NotImplementedError()
-    
-class FileFilterWidget(QWidget, FileFilter):   
-    def __init__(self, parent=None):
-        QWidget.__init__(self, parent)
 
+    @abc.abstractclassmethod
+    def description( self ) -> str:
+        raise NotImplementedError()
+    
+class FileFilter(FileEssentialsObject):    
     @abc.abstractclassmethod
     def use_file( self, file_path:str ) -> bool:
         raise NotImplementedError()
+    
+class FileProcessor(FileEssentialsObject):    
+    @abc.abstractclassmethod
+    def process( self, file_path:str ) -> bool:
+        raise NotImplementedError()
+        
+class FileFilterWidget(QWidget, FileFilter):   
+    def __init__(self, parent=None):
+        QWidget.__init__(self, parent)
     
 class FileProcessorWidget(QWidget, FileProcessor):
     def __init__(self, parent=None):
         QWidget.__init__(self, parent)
 
-    @abc.abstractclassmethod
-    def process( self, file_path:str ) -> None:
-        raise NotImplementedError()
-
 class FileEssentialsRegistry(FileFilter):
 
     @abc.abstractclassmethod    
-    def add_filter( self, file_filter:FileFilterWidget ) -> None:
+    def add_file_filter( self, file_filter:FileFilter ) -> None:
         raise NotImplementedError()
     
     @abc.abstractclassmethod    
-    def add_processor( self, file_processor_widget:FileProcessorWidget ) -> None:
+    def add_file_processor( self, file_processor_widget:FileProcessor ) -> None:
         raise NotImplementedError()
 
     @abc.abstractclassmethod    
-    def selected_processor( self ) -> FileProcessorObject:
+    def selected_processor( self ) -> FileProcessor:
         raise NotImplementedError()
 
 
@@ -243,6 +237,13 @@ class FesMainWindow(QMainWindow, FileEssentialsRegistry):
     def __init__(self):
         super().__init__()
 
+        # state vars
+        self._filters:list[FileFilter] = []
+        self._active_filters:list[FileFilter] = []
+        self._processors:list[FileProcessor] = []
+        self._active_processor:Union[None, FileProcessor] = None
+
+        # build ui
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -254,8 +255,13 @@ class FesMainWindow(QMainWindow, FileEssentialsRegistry):
         subwindow = mdi.addSubWindow(FesDirChooser())
         subwindow.setWindowTitle("Choose Directory")
         subwindow.show()
-        mdi.cascadeSubWindows()
 
+        # window menu
+        windows_menu = self.menuBar().addMenu('Windows')
+        cascade_action = windows_menu.addAction("Cascade")
+        cascade_action.triggered.connect( lambda checked: mdi.cascadeSubWindows() )
+        tile_action = windows_menu.addAction("Tile")
+        tile_action.triggered.connect( lambda checked: mdi.tileSubWindows() )
         
         self.setCentralWidget(mdi)    
         self.setWindowTitle("File Essentials")
@@ -263,15 +269,15 @@ class FesMainWindow(QMainWindow, FileEssentialsRegistry):
 
 
     @abc.abstractclassmethod    
-    def add_filter( self, file_filter:FileFilter ) -> None:
+    def add_file_filter( self, file_filter:FileFilter ) -> None:
         raise NotImplementedError()
     
     @abc.abstractclassmethod    
-    def add_processor( self, file_filter:FileFilter ) -> None:
+    def add_file_processor( self, file_processor_widget:FileProcessor ) -> None:
         raise NotImplementedError()
 
     @abc.abstractclassmethod    
-    def selected_processor( self ) -> FileProcessorObject:
+    def selected_processor( self ) -> FileProcessor:
         raise NotImplementedError()
 
 if __name__ == '__main__':
