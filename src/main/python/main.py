@@ -67,7 +67,7 @@ class FilePrinter(FileProcessorWidget):
         FileProcessorWidget.__init__(self, parent)
 
         self._text_widget = QTextEdit()
-        self._text_widget.setDisabled(True)
+        self._text_widget.setReadOnly(True)
 
         layout = QVBoxLayout()
         layout.addWidget( self._text_widget )
@@ -81,8 +81,8 @@ class FilePrinter(FileProcessorWidget):
         return "Prints the path for each file"
     
     def process( self, file_path:str ) -> bool:
-        html = f"<b>{file_path}</b><br>"
-        self._text_widget.insertHtml( html )
+        html = f"<b>{file_path}</b>"
+        self._text_widget.append( html )
 
     def set_process_directory( self, process_directory:str ) -> None:
         self._text_widget.setHtml("Processing directory "+process_directory)
@@ -91,14 +91,19 @@ class FileStatisticsPrinter(FileProcessorWidget):
     def __init__(self, parent=None):
         FileProcessorWidget.__init__(self, parent)
 
+        self._process_directory = None
+
         self._text_widget = QTextEdit()
-        self._text_widget.setDisabled(True)
+        self._text_widget.setReadOnly(True)
 
         layout = QVBoxLayout()
         layout.addWidget( self._text_widget )
 
         self.setLayout(layout)
         
+    def set_process_directory( self, process_directory:str ) -> None:
+        self._process_directory = process_directory
+
     def name( self ) -> str:
         return "File Statistics Printer"
 
@@ -106,9 +111,11 @@ class FileStatisticsPrinter(FileProcessorWidget):
         return "Prints statistics for each file"
     
     def process( self, file_path:str ) -> bool:
-        statistics = { "size": os.stat(file_path).st_size, "last_modified": os.stat(file_path).st_mtime }
-        html = f"<b>{file_path}</b>: {statistics}<br>"
-        self._text_widget.insertHtml( html )
+        file_path = os.path.join( self._process_directory, file_path )
+        if os.path.isfile( file_path ):
+            statistics = { "size": os.stat(file_path).st_size, "last_modified": os.stat(file_path).st_mtime }
+            html = f"<b>{file_path}</b>: {statistics}"
+            self._text_widget.append( html )
 
     def set_process_directory( self, process_directory:str ) -> None:
         self._text_widget.setHtml("Processing directory "+process_directory)
@@ -246,7 +253,9 @@ class FesDirChooser(QWidget):
 
             i = i + 1 if i < 100 else 0
 
-            for file_item in dirnames + filenames:                
+            for file_item in dirnames + filenames:         
+                if file_item in [".", "..", None]:
+                    continue       
                 #print(f'{file_path}')
                 if self._fes_registry.use_file( file_item ):
                     if file_processor:
