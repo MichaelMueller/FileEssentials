@@ -17,7 +17,10 @@ class FileEssentialsObject:
 
     @abc.abstractclassmethod
     def description( self ) -> str:
-        raise NotImplementedError()
+        raise NotImplementedError
+        
+    def set_process_directory( self, process_directory:str ) -> None:
+        pass
     
 class FileFilter(FileEssentialsObject):    
     @abc.abstractclassmethod
@@ -27,11 +30,7 @@ class FileFilter(FileEssentialsObject):
 class FileProcessor(FileEssentialsObject):    
     @abc.abstractclassmethod
     def process( self, file_path:str ) -> None:
-        raise NotImplementedError()
-    
-    @abc.abstractclassmethod
-    def reset( self ) -> None:
-        raise NotImplementedError()
+        raise NotImplementedError()    
         
 class FileFilterWidget(QWidget, FileFilter):   
     def __init__(self, parent=None):
@@ -57,7 +56,11 @@ class FileEssentialsRegistry:
     
     @abc.abstractclassmethod        
     def use_file( self, file_path:str ) -> bool:
-        raise NotImplementedError()
+        raise NotImplementedError()       
+        
+    @abc.abstractclassmethod        
+    def set_process_directory( self, process_directory:str ) -> None:
+        raise NotImplementedError()       
 
 class FilePrinter(FileProcessorWidget):
     def __init__(self, parent=None):
@@ -81,8 +84,8 @@ class FilePrinter(FileProcessorWidget):
         html = f"<b>{file_path}</b><br>"
         self._text_widget.insertHtml( html )
 
-    def reset( self ) -> None:
-        self._text_widget.setHtml("")
+    def set_process_directory( self, process_directory:str ) -> None:
+        self._text_widget.setHtml("Processing directory "+process_directory)
 
 class FileStatisticsPrinter(FileProcessorWidget):
     def __init__(self, parent=None):
@@ -107,8 +110,44 @@ class FileStatisticsPrinter(FileProcessorWidget):
         html = f"<b>{file_path}</b>: {statistics}<br>"
         self._text_widget.insertHtml( html )
 
-    def reset( self ) -> None:
-        self._text_widget.setHtml("")
+    def set_process_directory( self, process_directory:str ) -> None:
+        self._text_widget.setHtml("Processing directory "+process_directory)
+    
+class FileOrFolderFilter(FileProcessorWidget):
+    def __init__(self, parent=None):
+        FileProcessorWidget.__init__(self, parent)
+
+        self._process_directory = None
+
+        self._choice = QComboBox()
+        self._choice.addItem("Files and Folders")
+        self._choice.addItem("Only Files")
+        self._choice.addItem("Only Folders")
+
+        layout = QVBoxLayout()
+        layout.addWidget( QLabel("Enter allowed file items") )
+        layout.addWidget( self._choice )
+        layout.addStretch()
+
+        self.setLayout(layout)
+        
+    def set_process_directory( self, process_directory:str ) -> None:
+        self._process_directory = process_directory
+
+    def name( self ) -> str:
+        return "File or Folder Filter"
+
+    def description( self ) -> str:
+        return "Filters files, folders or both"
+    
+    def use_file( self, file_path:str ) -> bool:
+        
+        if self._choice.currentText() == "Files and Folders":
+            return True
+        elif self._choice.currentText() == "Only Folders":
+            return os.path.isdir( os.path.join( self._process_directory, file_path ) )
+        elif self._choice.currentText() == "Only Files":
+            return os.path.isfile( os.path.join( self._process_directory, file_path ) )
     
 class FileExtensionFilter(FileProcessorWidget):
     def __init__(self, parent=None):
@@ -167,29 +206,28 @@ class FesDirChooser(QWidget):
         layout.addWidget(self._reprocess_button)
         layout.addStretch()
         self.setLayout(layout)
+   
+    def set_process_directory( self, process_directory:Union[str,None], user:bool=None ) -> None:        
+        if process_directory:
+            self._fes_registry.set_process_directory( process_directory )
+            self._reprocess_button.setDisabled(False)
+            self._dir_input.setText(process_directory)
+            self.process_directory(process_directory)
+        else:            
+            self._reprocess_button.setDisabled(True)
+            self._dir_input.setText("")
 
     def reprocess_button_clicked(self):
-        files = self.scan_files(self._dir_input.text())
+        self.set_process_directory( self._dir_input.text(), True )
 
     def dir_button_clicked(self):
         # self.file_list.clear()
         # self.file_list.setEnabled(False)
         #self.output_file_widget.setEnabled(False)
         dir = str (QFileDialog.getExistingDirectory(self, "Select Directory") )
-        if dir:
-            self._reprocess_button.setDisabled(False)
-            self._dir_input.setText(dir)
-            files = self.scan_files(dir)
-        else:            
-            self._reprocess_button.setDisabled(True)
-            self._dir_input.setText("")
-            # for file in files:
-            #     self.file_list.addItem(file)
-            # if len(files) > 0:
-            #     # self.file_list.setEnabled(True)
-            #     self.output_file_widget.setEnabled(True)
+        self.set_process_directory(dir, True)
 
-    def scan_files(self, dir_path):
+    def process_directory(self, process_directory):
         self.progress_dialog = QProgressDialog("Processing ...", "Cancel", 0, 0, self)
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.setAutoReset(True)
@@ -199,22 +237,20 @@ class FesDirChooser(QWidget):
         files = []
         i = 1
         file_processor = self._fes_registry.active_processor()
-        if file_processor:
-            file_processor.reset()
-        for root, dirnames, filenames in os.walk(dir_path):
-            for file in filenames:
-                file_path = os.path.join(root, file)                
-                if self.progress_dialog.wasCanceled():
-                    return []
-                self.progress_dialog.setValue(i)
-                QApplication.processEvents()
 
-                i = i + 1 if i < 100 else 0
-                
+        for root, dirnames, filenames in os.walk(process_directory):                          
+            if self.progress_dialog.wasCanceled():
+                return []
+            self.progress_dialog.setValue(i)
+            QApplication.processEvents()
+
+            i = i + 1 if i < 100 else 0
+
+            for file_item in dirnames + filenames:                
                 #print(f'{file_path}')
-                if self._fes_registry.use_file( file_path ):
+                if self._fes_registry.use_file( file_item ):
                     if file_processor:
-                        file_processor.process( file )
+                        file_processor.process( file_item )
 
         self.progress_dialog.close()
         self.progress_dialog = None
@@ -239,6 +275,7 @@ class FesMainWindow(QMainWindow, FileEssentialsRegistry):
 
         # add default filters and processors
         self.add_file_filter( FileExtensionFilter() )
+        self.add_file_filter( FileOrFolderFilter() )
         self.add_file_processor( FilePrinter() )
         self.add_file_processor( FileStatisticsPrinter() )
 
@@ -296,7 +333,11 @@ class FesMainWindow(QMainWindow, FileEssentialsRegistry):
             action.setObjectName( filter.name() )
             action.triggered.connect( self._filter_action_clicked )
             action.setCheckable(True)
-    
+         
+    def set_process_directory( self, process_directory:str ) -> None:
+        for file_essentials_object in self._filters + self._processors:
+            file_essentials_object.set_process_directory(process_directory)
+
     def add_file_processor( self, file_processor:FileProcessor ) -> None:
         if self.file_processor(file_processor.name() ) != None:
             sys.stderr.write(f"FileProcessor \"{file_processor.name()}\" already added!\n")
