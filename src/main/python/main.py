@@ -4,13 +4,41 @@ from typing import Union
 
 # pip imports
 from PyQt5 import QtCore
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSettings
 from PyQt5.QtWidgets import QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, \
     QListWidget, QFileDialog, QAbstractItemView, QMessageBox, QProgressDialog, QApplication, QLabel, QTextEdit, \
-    QSplitter, QGroupBox, QMainWindow, QComboBox, QMdiArea, QMenu, QAction
+    QSplitter, QGroupBox, QMainWindow, QComboBox, QMdiArea, QMenu, QAction, QErrorMessage
 
-# interfaces and abstract classes    
-class FileEssentialsObject:  
+# base classes
+class FesWidget(QWidget):  
+    def global_settings() -> QSettings:
+        settings = QSettings(QSettings.UserScope, "https://github.com/MichaelMueller", "File Essentials")
+        return settings
+
+    """ Base class for widget inside Fes (FileEssentials) """
+    def __init__(self, parent=None):
+        QWidget.__init__(self, parent)
+        
+    def main_window( self ) -> Union[None, "FesMainWindow"]:
+        curr_object = self
+        while curr_object is not None and not isinstance( curr_object, FesMainWindow ):
+            curr_object = curr_object.parent()
+        return curr_object
+    
+class FilterOrProcessorWidget(FesWidget):
+    def __init__(self, parent=None):
+        QWidget.__init__(self, parent)
+        self._base_directory:str = None
+
+    def before_processing( self, base_directory:str ) -> None:
+        """ Called each time BEFORE the processing of the directory starts """
+        self._base_directory = base_directory
+
+    def settings( self ) -> QSettings:
+        settings = FesWidget.global_settings()
+        settings.beginGroup(self.name())
+        return settings
+    
     @abc.abstractclassmethod
     def name( self ) -> str:
         raise NotImplementedError()
@@ -18,53 +46,129 @@ class FileEssentialsObject:
     @abc.abstractclassmethod
     def description( self ) -> str:
         raise NotImplementedError
-        
-    def set_process_directory( self, process_directory:str ) -> None:
-        pass
-    
-class FileFilter(FileEssentialsObject):    
+
+class FilterWidget(FilterOrProcessorWidget):    
+    def __init__(self, parent=None):
+        QWidget.__init__(self, parent)
+
     @abc.abstractclassmethod
-    def use_file( self, file_path:str ) -> bool:
+    def use_file( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
         raise NotImplementedError()
     
-class FileProcessor(FileEssentialsObject):    
+class ProcessorWidget(FilterOrProcessorWidget):    
+    def __init__(self, parent=None):
+        QWidget.__init__(self, parent)
+
     @abc.abstractclassmethod
-    def process( self, file_path:str ) -> None:
+    def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> None:
         raise NotImplementedError()    
-        
-class FileFilterWidget(QWidget, FileFilter):   
-    def __init__(self, parent=None):
-        QWidget.__init__(self, parent)
-    
-class FileProcessorWidget(QWidget, FileProcessor):
+
+class FesDirChooser(FesWidget):
+    """ The fundamental widget for choosing a directory """
     def __init__(self, parent=None):
         QWidget.__init__(self, parent)
 
-class FileEssentialsRegistry:
+        # build UI
+        self._base_directory = QLineEdit()
+        self._base_directory.setDisabled(True)
+        self._base_directory.setStyleSheet("min-width: 240px;")
 
-    @abc.abstractclassmethod    
-    def add_file_filter( self, file_filter:FileFilter ) -> None:
-        raise NotImplementedError()
-    
-    @abc.abstractclassmethod    
-    def add_file_processor( self, file_processor_widget:FileProcessor ) -> None:
-        raise NotImplementedError()
+        select_directory_button = QPushButton("Select Directory")
+        select_directory_button.clicked.connect(self.select_directory_button_clicked)
 
-    @abc.abstractclassmethod    
-    def active_processor( self ) -> FileProcessor:
-        raise NotImplementedError()
-    
-    @abc.abstractclassmethod        
-    def use_file( self, file_path:str ) -> bool:
-        raise NotImplementedError()       
-        
-    @abc.abstractclassmethod        
-    def set_process_directory( self, process_directory:str ) -> None:
-        raise NotImplementedError()       
+        self._reprocess_button = QPushButton("Reprocess")
+        self._reprocess_button.clicked.connect(self.reprocess_button_clicked)
+        self._reprocess_button.setDisabled(True)
 
-class FilePrinter(FileProcessorWidget):
+        layout = QVBoxLayout()
+        layout.addWidget(self._base_directory)
+        layout.addWidget(select_directory_button)
+        layout.addWidget(self._reprocess_button)
+        layout.addStretch()
+        self.setLayout(layout)
+
+        # restore values
+        self.set_base_directory( FesWidget.global_settings().value("base_directory"), start_processing=False )
+   
+    def set_base_directory( self, base_directory:Union[str,None], start_processing:bool=True ) -> None:        
+        if base_directory:
+            if not os.path.isdir( base_directory ):
+                error_dialog = QErrorMessage()
+                error_dialog.showMessage(f'Not a directory: "{base_directory}"')
+                return
+            base_directory = os.path.abspath( base_directory )
+            self._reprocess_button.setDisabled(False)
+            self._base_directory.setText(base_directory)
+            if start_processing:
+                self._start_processing()
+        else:            
+            self._reprocess_button.setDisabled(True)
+            self._base_directory.setText("")
+
+        FesWidget.global_settings().setValue( "base_directory", base_directory )
+
+    def reprocess_button_clicked(self):
+        self._start_processing()
+
+    def select_directory_button_clicked(self):
+        dir = str (QFileDialog.getExistingDirectory(self, "Select Directory") )
+        self.set_base_directory(dir, True)
+
+    def _start_processing(self):
+        # setup progress dialog
+        progress_dialog = QProgressDialog("Processing ...", "Cancel", 0, 0, self)
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setAutoReset(True)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.show()
+
+        # collect files
+        i = 0
+        file_infos:list[tuple[str, str, int]] = []
+        base_directory_abs_path = os.path.abspath( self._base_directory.text() )
+        progress_dialog.setLabelText("Scanning files")
+        for root, dirnames, filenames in os.walk(base_directory_abs_path):     
+            if progress_dialog.wasCanceled():
+                return
+            QApplication.processEvents()
+
+            level = root[len(base_directory_abs_path):].count(os.sep)
+            for basename in dirnames + filenames:
+                abs_path = os.path.join(root, basename)
+                rel_path = abs_path.replace( base_directory_abs_path, "" )
+                rel_path.replace( os.sep, "/" )
+                file_infos.append( (abs_path, rel_path, level) )
+                     
+            i = i + 1 if i < 100 else 0
+            progress_dialog.setValue(i)
+        print(f'file_infos: {file_infos}')  
+
+        # process files
+        progress_dialog.setLabelText("Processing files")
+        progress_dialog.setValue(0)
+        main_window = self.main_window()
+        main_window.before_processing( base_directory_abs_path )
+        processor_widget = main_window.active_processor()
+        one_percent = float( len(file_infos) ) / 100.0
+
+        for i, file_info in enumerate(file_infos):            
+            if progress_dialog.wasCanceled():
+                return
+            QApplication.processEvents()
+
+            if main_window.use_file( file_info[0], file_info[1], file_info[2] ):
+                if processor_widget:
+                    processor_widget.process( file_info[0], file_info[1], file_info[2] )
+
+            percent = round( one_percent / float(i+1) )
+            progress_dialog.setValue( percent )
+
+        progress_dialog.close()
+        progress_dialog = None
+
+class FilePrinter(ProcessorWidget):
     def __init__(self, parent=None):
-        FileProcessorWidget.__init__(self, parent)
+        ProcessorWidget.__init__(self, parent)
 
         self._text_widget = QTextEdit()
         self._text_widget.setReadOnly(True)
@@ -80,18 +184,18 @@ class FilePrinter(FileProcessorWidget):
     def description( self ) -> str:
         return "Prints the path for each file"
     
-    def process( self, file_path:str ) -> bool:
-        html = f"<b>{file_path}</b>"
+    def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
+        html = f"{rel_file_path}"
         self._text_widget.append( html )
 
-    def set_process_directory( self, process_directory:str ) -> None:
-        self._text_widget.setHtml("Processing directory "+process_directory)
+    def before_processing( self, base_directory:str ) -> None:
+        self._text_widget.setHtml("Processing directory <b>"+base_directory+"</b>")
+        super().before_processing( base_directory )
 
-class FileStatisticsPrinter(FileProcessorWidget):
+class FileStatisticsPrinter(ProcessorWidget):
     def __init__(self, parent=None):
-        FileProcessorWidget.__init__(self, parent)
+        ProcessorWidget.__init__(self, parent)
 
-        self._process_directory = None
 
         self._text_widget = QTextEdit()
         self._text_widget.setReadOnly(True)
@@ -100,9 +204,6 @@ class FileStatisticsPrinter(FileProcessorWidget):
         layout.addWidget( self._text_widget )
 
         self.setLayout(layout)
-        
-    def set_process_directory( self, process_directory:str ) -> None:
-        self._process_directory = process_directory
 
     def name( self ) -> str:
         return "File Statistics Printer"
@@ -110,21 +211,22 @@ class FileStatisticsPrinter(FileProcessorWidget):
     def description( self ) -> str:
         return "Prints statistics for each file"
     
-    def process( self, file_path:str ) -> bool:
-        file_path = os.path.join( self._process_directory, file_path )
-        if os.path.isfile( file_path ):
-            statistics = { "size": os.stat(file_path).st_size, "last_modified": os.stat(file_path).st_mtime }
-            html = f"<b>{file_path}</b>: {statistics}"
+    def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
+        if os.path.isfile( abs_file_path ):
+            stat = os.stat(abs_file_path)
+            statistics = { "size": stat.st_size, "last_modified": stat.st_mtime }
+            html = f"{rel_file_path}: {statistics}"
             self._text_widget.append( html )
 
-    def set_process_directory( self, process_directory:str ) -> None:
-        self._text_widget.setHtml("Processing directory "+process_directory)
+    def before_processing( self, base_directory:str ) -> None:
+        self._text_widget.setHtml("Processing directory <b>"+base_directory+"</b>")
+        super().before_processing( base_directory )
     
-class FileOrFolderFilter(FileProcessorWidget):
+class FileOrFolderFilter(FilterWidget):
     def __init__(self, parent=None):
-        FileProcessorWidget.__init__(self, parent)
+        FilterWidget.__init__(self, parent)
 
-        self._process_directory = None
+        self._base_directory = None
 
         self._choice = QComboBox()
         self._choice.addItem("Files and Folders")
@@ -137,9 +239,6 @@ class FileOrFolderFilter(FileProcessorWidget):
         layout.addStretch()
 
         self.setLayout(layout)
-        
-    def set_process_directory( self, process_directory:str ) -> None:
-        self._process_directory = process_directory
 
     def name( self ) -> str:
         return "File or Folder Filter"
@@ -147,18 +246,17 @@ class FileOrFolderFilter(FileProcessorWidget):
     def description( self ) -> str:
         return "Filters files, folders or both"
     
-    def use_file( self, file_path:str ) -> bool:
-        
+    def use_file( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:        
         if self._choice.currentText() == "Files and Folders":
             return True
         elif self._choice.currentText() == "Only Folders":
-            return os.path.isdir( os.path.join( self._process_directory, file_path ) )
+            return os.path.isdir( abs_file_path )
         elif self._choice.currentText() == "Only Files":
-            return os.path.isfile( os.path.join( self._process_directory, file_path ) )
+            return os.path.isfile( abs_file_path )
     
-class FileExtensionFilter(FileProcessorWidget):
+class FileExtensionFilter(FilterWidget):
     def __init__(self, parent=None):
-        FileProcessorWidget.__init__(self, parent)
+        FilterWidget.__init__(self, parent)
 
         self._extensions_input = QLineEdit()
 
@@ -175,130 +273,33 @@ class FileExtensionFilter(FileProcessorWidget):
     def description( self ) -> str:
         return "Filters files by their extension"
     
-    def use_file( self, file_path:str ) -> bool:
+    def use_file( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
         use_file = False
         allowed_file_extensions:list[str] = self._extensions_input.text().split(";")
         if self._extensions_input.text() == "" or len( allowed_file_extensions ) == 0:
             use_file = True
         else:
             allowed_file_extensions = [ allowed_file_extension.strip().replace("*.", ".").lower() for allowed_file_extension in allowed_file_extensions ]        
-            _, file_ext = os.path.splitext(file_path)
+            _, file_ext = os.path.splitext(abs_file_path)
             use_file = file_ext.lower() in allowed_file_extensions or ".*" in allowed_file_extensions       
-        print(f'use_file: {use_file}')
+        #print(f'use_file: {use_file}')
         return use_file
 
-class FesDirChooser(QWidget):
-    def __init__(self, fes_registry:FileEssentialsRegistry, parent=None):
-        QWidget.__init__(self, parent)
-        self._fes_registry = fes_registry
-        # build gui
-
-        # left pane: 
-        # Directory->Filter->File List
-        self._dir_input = QLineEdit()
-        self._dir_input.setDisabled(True)
-        self._dir_input.setStyleSheet("min-width: 240px;")
-
-        dir_button = QPushButton("Select Directory")
-        dir_button.clicked.connect(self.dir_button_clicked)
-
-        self._reprocess_button = QPushButton("Reprocess")
-        self._reprocess_button.clicked.connect(self.reprocess_button_clicked)
-        self._reprocess_button.setDisabled(True)
-
-        # self layout
-        layout = QVBoxLayout()
-        layout.addWidget(self._dir_input)
-        layout.addWidget(dir_button)
-        layout.addWidget(self._reprocess_button)
-        layout.addStretch()
-        self.setLayout(layout)
-   
-    def set_process_directory( self, process_directory:Union[str,None], user:bool=None ) -> None:        
-        if process_directory:
-            self._fes_registry.set_process_directory( process_directory )
-            self._reprocess_button.setDisabled(False)
-            self._dir_input.setText(process_directory)
-            self.process_directory(process_directory)
-        else:            
-            self._reprocess_button.setDisabled(True)
-            self._dir_input.setText("")
-
-    def reprocess_button_clicked(self):
-        self.set_process_directory( self._dir_input.text(), True )
-
-    def dir_button_clicked(self):
-        # self.file_list.clear()
-        # self.file_list.setEnabled(False)
-        #self.output_file_widget.setEnabled(False)
-        dir = str (QFileDialog.getExistingDirectory(self, "Select Directory") )
-        self.set_process_directory(dir, True)
-
-    def process_directory(self, process_directory):
-        self.progress_dialog = QProgressDialog("Processing ...", "Cancel", 0, 0, self)
-        self.progress_dialog.setWindowModality(Qt.WindowModal)
-        self.progress_dialog.setAutoReset(True)
-        self.progress_dialog.setAutoClose(False)
-        self.progress_dialog.show()
-        # pdf file search
-        files = []
-        i = 1
-        file_processor = self._fes_registry.active_processor()
-
-        for root, dirnames, filenames in os.walk(process_directory):                          
-            if self.progress_dialog.wasCanceled():
-                return []
-            self.progress_dialog.setValue(i)
-            QApplication.processEvents()
-
-            i = i + 1 if i < 100 else 0
-
-            for file_item in dirnames + filenames:         
-                if file_item in [".", "..", None]:
-                    continue       
-                #print(f'{file_path}')
-                if self._fes_registry.use_file( file_item ):
-                    if file_processor:
-                        file_processor.process( file_item )
-
-        self.progress_dialog.close()
-        self.progress_dialog = None
-        return files
-    
-
-class FesMainWindow(QMainWindow, FileEssentialsRegistry):
+class FesMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # state vars
-        self._filters:list[FileFilter] = []
-        self._processors:list[FileProcessor] = []
-
-        # widgets
-        self.mdi:QMdiArea = None
-        self._filters_menu:QMenu = None
-        self._processors_menu:QMenu = None
-
-        # build ui
-        self._build_ui()
-
-        # add default filters and processors
-        self.add_file_filter( FileExtensionFilter() )
-        self.add_file_filter( FileOrFolderFilter() )
-        self.add_file_processor( FilePrinter() )
-        self.add_file_processor( FileStatisticsPrinter() )
-
-    def _build_ui(self) -> None:
+        # build widgets
         self._mdi = QMdiArea()
         self._mdi.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._mdi.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        
+
         # add subwindow
         subwindow = self._mdi.addSubWindow(FesDirChooser( self ), QtCore.Qt.WindowMinMaxButtonsHint )
         subwindow.setWindowTitle("Choose Directory")
         subwindow.show()
 
-        # other menus
+        # filter and processor menus
         self._filters_menu = self.menuBar().addMenu('Filters')
         self._processors_menu = self.menuBar().addMenu('Processors')
 
@@ -308,132 +309,118 @@ class FesMainWindow(QMainWindow, FileEssentialsRegistry):
         cascade_action.triggered.connect( lambda checked: self._mdi.cascadeSubWindows() )
         tile_action = windows_menu.addAction("Tile")
         tile_action.triggered.connect( lambda checked: self._mdi.tileSubWindows() )
-        
+
+        # add default filters and processors
+        self.add_filter_widget( FileExtensionFilter() )
+        self.add_filter_widget( FileOrFolderFilter() )
+        self.add_processor_widget( FilePrinter() )
+        self.add_processor_widget( FileStatisticsPrinter() )
+
+        # finalize
         self.setCentralWidget(self._mdi)    
-        self.setWindowTitle("File Essentials")
-        self.show()
+        self.setWindowTitle("File Essentials")       
 
-    def file_filter(self, name:str) -> Union[FileFilter, None]:        
-        for file_filter in self._filters:
-            if file_filter.name() == name:
-                return file_filter            
+    def filter_widget(self, name:str) -> Union[FilterWidget, None]:      
+        #print(f'self._mdi.subWindowList(): {self._mdi.subWindowList()}')  
+        for subwindow in self._mdi.subWindowList():
+            widget = subwindow.widget()
+            if isinstance(widget, FilterWidget) :        
+                #print(f'widget.name(): {widget.name()}')  
+
+                if widget.name() == name:
+                    return widget            
         return None
 
-    def file_processor(self, name:str) -> Union[FileProcessor, None]:
-        for file_processor in self._processors:
-            if file_processor.name() == name:
-                return file_processor            
+    def processor_widget(self, name:str) -> Union[ProcessorWidget, None]:   
+        for subwindow in self._mdi.subWindowList():
+            widget = subwindow.widget()
+            if isinstance(widget, ProcessorWidget) and widget.name() == name:
+                return widget            
         return None
 
-    def add_file_filter( self, file_filter:FileFilter ) -> None:
-        if self.file_filter(file_filter.name() ) != None:
-            sys.stderr.write(f"FileFilter \"{file_filter.name()}\" already added!\n")
+    def add_filter_widget( self, filter_widget:FilterWidget ) -> None:
+        if self.filter_widget(filter_widget.name() ) != None:
+            sys.stderr.write(f"Filter widget \"{filter_widget.name()}\" already added!\n")
             return
 
-        # set as parent
-        if isinstance(file_filter, QWidget):
-            file_filter.setParent(self)
-        self._filters.append( file_filter )
+        # add subwindow
+        subwindow = self._mdi.addSubWindow(filter_widget, QtCore.Qt.WindowMinMaxButtonsHint)
+        subwindow.setWindowTitle(filter_widget.name())
+        subwindow.hide()
 
-        # rebuild menu
-        self._filters_menu.clear()
-        for filter in self._filters:
-            action = self._filters_menu.addAction( filter.name() )
-            action.setObjectName( filter.name() )
-            action.triggered.connect( self._filter_action_clicked )
-            action.setCheckable(True)
-         
-    def set_process_directory( self, process_directory:str ) -> None:
-        for file_essentials_object in self._filters + self._processors:
-            file_essentials_object.set_process_directory(process_directory)
+        # add action
+        action = self._filters_menu.addAction( filter_widget.name() )
+        action.setObjectName( filter_widget.name() )
+        action.triggered.connect( self._filter_action_clicked )
+        action.setCheckable(True)
 
-    def add_file_processor( self, file_processor:FileProcessor ) -> None:
-        if self.file_processor(file_processor.name() ) != None:
-            sys.stderr.write(f"FileProcessor \"{file_processor.name()}\" already added!\n")
+    def add_processor_widget( self, processor_widget:ProcessorWidget ) -> None:
+        if self.processor_widget(processor_widget.name() ) != None:
+            sys.stderr.write(f"Processor widget \"{processor_widget.name()}\" already added!\n")
             return
-        
-        # set as parent
-        if isinstance(file_processor, QWidget):
-            file_processor.setParent(self)
-        self._processors.append( file_processor )
 
-        # rebuild menu
-        self._processors_menu.clear()
-        for processor in self._processors:
+        # add subwindow
+        subwindow = self._mdi.addSubWindow(processor_widget, QtCore.Qt.WindowMinMaxButtonsHint)
+        subwindow.setWindowTitle(processor_widget.name())
+        subwindow.hide()
 
-            action = self._processors_menu.addAction( processor.name() )
-            action.setObjectName( processor.name() )
-            action.triggered.connect( self._processor_action_clicked )
-            action.setCheckable(True)
+        # add action
+        action = self._processors_menu.addAction( processor_widget.name() )
+        action.setObjectName( processor_widget.name() )
+        action.triggered.connect( self._processor_action_clicked )
+        action.setCheckable(True)
 
-    def active_processor( self ) -> Union[None, FileProcessor]:        
+    def before_processing( self, base_directory:str ) -> None:
+        for subwindow in self._mdi.subWindowList():
+            widget = subwindow.widget()
+            if isinstance(widget, FilterOrProcessorWidget):
+                widget.before_processing(base_directory)
+
+    def active_processor( self ) -> Union[None, ProcessorWidget]:        
         for curr_action in self._processors_menu.actions():
             if curr_action.isChecked():
-                return self.file_processor( curr_action.objectName() )
+                return self.processor_widget( curr_action.objectName() )
         return None
 
     def _filter_action_clicked( self, checked:bool ):
         # get sender and filter
         # get sender and processor
         action = self.sender()
-        filter_name = action.objectName()
+        filter_widget_name = action.objectName()
         #print(f"Found action for processor {processor_name}")     
-        filter = self.file_filter(filter_name)
-                
-        if isinstance(filter, QWidget):
-            subwindow = None                    
-            for curr_subwindow in self._mdi.subWindowList():
-                if curr_subwindow.windowTitle() == filter.name():
-                    subwindow = curr_subwindow
-                    break
-            
-            if not subwindow:
-                subwindow = self._mdi.addSubWindow(filter, QtCore.Qt.WindowMinMaxButtonsHint)
-                subwindow.setWindowTitle(filter.name())
-                                
-            subwindow.show() if checked else subwindow.hide()
+        filter = self.filter_widget(filter_widget_name)
+        subwindow = filter.parent()                        
+        subwindow.show() if checked else subwindow.hide()
 
     def _processor_action_clicked( self, checked:bool ):   
         # get sender and processor
         action = self.sender()
         processor_name = action.objectName()
-        #print(f"Found action for processor {processor_name}")     
-        processor = self.file_processor(processor_name)
 
-        # Hide all processor windows and show the one that is used
-        subwindow = None                   
-        if isinstance(processor, QWidget): 
-            for curr_subwindow in self._mdi.subWindowList():
-                if isinstance( curr_subwindow.widget(), FileProcessor ):
-                    if curr_subwindow.windowTitle() == processor_name:
-                        subwindow = curr_subwindow
-                    curr_subwindow.hide()
-            
-            if not subwindow:
-                subwindow = self._mdi.addSubWindow(processor, QtCore.Qt.WindowMinMaxButtonsHint)
-                subwindow.setWindowTitle(processor_name)
+        # hide all except current
+        for subwindow in self._mdi.subWindowList():
+            widget = subwindow.widget()
+            if isinstance(widget, ProcessorWidget):                
+                subwindow.show() if widget.name() == processor_name else subwindow.hide()
 
         # uncheck all actions
         for curr_action in self._processors_menu.actions():
-            curr_action.setChecked(False)
-        
-        action.setChecked( checked )
-        if subwindow:
-            subwindow.show() if checked else subwindow.hide()
+            curr_action.setChecked(curr_action.text() == processor_name)
 
-    def use_file( self, file_path:str ) -> bool:
-        active_filters:list[FileFilter] = []
+    def use_file( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
+        active_filters:list[FilterWidget] = []
         for curr_action in self._filters_menu.actions():
             if curr_action.isChecked():
-                active_filters.append( self.file_filter( curr_action.objectName() ) )
+                active_filters.append( self.filter_widget( curr_action.objectName() ) )
         
         # check
         for filter in active_filters:
-            if filter.use_file( file_path ) == False:
+            if filter.use_file( abs_file_path, rel_file_path, level ) == False:
                 return False
         return True
     
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     fes_main_window = FesMainWindow()
+    fes_main_window.show()
     app.exec_()
