@@ -3,3 +3,4 @@ PyQt5
 PyQt5-stubs
 PyQtWebEngine
 QDarkStyle
+filehash

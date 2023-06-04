@@ -1,8 +1,9 @@
 # sys imports
 import sys, os, datetime, abc
-from typing import Union
+from typing import Union, Any
 
 # pip imports
+from filehash import FileHash
 from PyQt5 import QtCore
 from PyQt5.QtCore import Qt, QSettings
 from PyQt5.QtWidgets import QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, \
@@ -34,10 +35,18 @@ class FilterOrProcessorWidget(FesWidget):
         """ Called each time BEFORE the processing of the directory starts """
         self._base_directory = base_directory
 
-    def settings( self ) -> QSettings:
+    def post_processing( self ) -> None:
+        pass
+
+    def settings_value( self, name:str, default_value:Any=None ) -> Any:
         settings = FesWidget.global_settings()
-        settings.beginGroup(self.name())
-        return settings
+        #settings.beginGroup(self.name())
+        return settings.value( self.__class__.__name__+"."+str(name), default_value )
+
+    def set_settings_value( self, name:str, value:Any ) -> None:
+        settings = FesWidget.global_settings()
+        #settings.beginGroup(self.name())
+        settings.setValue( self.__class__.__name__+"."+str(name), value)
     
     @abc.abstractclassmethod
     def name( self ) -> str:
@@ -136,12 +145,12 @@ class FesDirChooser(FesWidget):
             for basename in dirnames + filenames:
                 abs_path = os.path.join(root, basename)
                 rel_path = abs_path.replace( base_directory_abs_path, "" )
-                rel_path.replace( os.sep, "/" )
+                rel_path = rel_path.replace( "\\", "/" )[1:]
                 file_infos.append( (abs_path, rel_path, level) )
                      
             i = i + 1 if i < 100 else 0
             progress_dialog.setValue(i)
-        print(f'file_infos: {file_infos}')  
+        #print(f'file_infos: {file_infos}')  
 
         # process files
         progress_dialog.setLabelText("Processing files")
@@ -156,6 +165,7 @@ class FesDirChooser(FesWidget):
                 return
             QApplication.processEvents()
 
+            # TODO try catch
             if main_window.use_file( file_info[0], file_info[1], file_info[2] ):
                 if processor_widget:
                     processor_widget.process( file_info[0], file_info[1], file_info[2] )
@@ -163,6 +173,7 @@ class FesDirChooser(FesWidget):
             percent = round( one_percent / float(i+1) )
             progress_dialog.setValue( percent )
 
+        main_window.post_processing()
         progress_dialog.close()
         progress_dialog = None
 
@@ -222,6 +233,45 @@ class FileStatisticsPrinter(ProcessorWidget):
         self._text_widget.setHtml("Processing directory <b>"+base_directory+"</b>")
         super().before_processing( base_directory )
     
+class DeDuplicator(ProcessorWidget):
+    def __init__(self, parent=None):
+        ProcessorWidget.__init__(self, parent)
+
+        self._hasher = None
+        self._hashes:dict[str, list[str]] = {}
+
+        self._text_widget = QTextEdit()
+        self._text_widget.setReadOnly(True)
+
+        layout = QVBoxLayout()
+        layout.addWidget( self._text_widget )
+
+        self.setLayout(layout)
+
+    def name( self ) -> str:
+        return "DeDuplicator"
+
+    def description( self ) -> str:
+        return "Removes duplicates in the base directory"
+    
+    def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
+        if os.path.isfile( abs_file_path ):
+            hash = self._hasher.hash_file(abs_file_path)
+            if not hash in self._hashes:
+                self._hashes[hash] = []
+            self._hashes[hash].append( rel_file_path )
+
+    def before_processing( self, base_directory:str ) -> None:
+        self._hasher = FileHash('md5')
+        self._hashes = {}
+        self._text_widget.setHtml("")
+        super().before_processing( base_directory )
+
+    def post_processing(self) -> None:
+        for hashed_files in self._hashes.values():
+            if len(hashed_files) > 1:
+                self._text_widget.append(f"Found duplicates: {hashed_files}")
+
 class FileOrFolderFilter(FilterWidget):
     def __init__(self, parent=None):
         FilterWidget.__init__(self, parent)
@@ -232,6 +282,8 @@ class FileOrFolderFilter(FilterWidget):
         self._choice.addItem("Files and Folders")
         self._choice.addItem("Only Files")
         self._choice.addItem("Only Folders")
+        self._choice.setStyleSheet("min-width: 240px;")
+        self._choice.currentTextChanged.connect( lambda changed_text: self.set_settings_value("choice", changed_text) )
 
         layout = QVBoxLayout()
         layout.addWidget( QLabel("Enter allowed file items") )
@@ -239,6 +291,9 @@ class FileOrFolderFilter(FilterWidget):
         layout.addStretch()
 
         self.setLayout(layout)
+
+        # restore state
+        self._choice.setCurrentText( self.settings_value( "choice", "Files and Folders" ) )
 
     def name( self ) -> str:
         return "File or Folder Filter"
@@ -259,6 +314,7 @@ class FileExtensionFilter(FilterWidget):
         FilterWidget.__init__(self, parent)
 
         self._extensions_input = QLineEdit()
+        self._extensions_input.textChanged.connect( lambda changed_text: self.set_settings_value("extensions", changed_text) )
 
         layout = QVBoxLayout()
         layout.addWidget( QLabel("Enter allowed extensions (e.g. \"*.jpg; *.txt\")") )
@@ -266,6 +322,9 @@ class FileExtensionFilter(FilterWidget):
         layout.addStretch()
 
         self.setLayout(layout)
+
+        # restore state
+        self._extensions_input.setText( self.settings_value( "extensions", "" ) )
         
     def name( self ) -> str:
         return "File Extension Filter"
@@ -315,6 +374,7 @@ class FesMainWindow(QMainWindow):
         self.add_filter_widget( FileOrFolderFilter() )
         self.add_processor_widget( FilePrinter() )
         self.add_processor_widget( FileStatisticsPrinter() )
+        self.add_processor_widget( DeDuplicator() )
 
         # finalize
         self.setCentralWidget(self._mdi)    
@@ -346,13 +406,19 @@ class FesMainWindow(QMainWindow):
         # add subwindow
         subwindow = self._mdi.addSubWindow(filter_widget, QtCore.Qt.WindowMinMaxButtonsHint)
         subwindow.setWindowTitle(filter_widget.name())
-        subwindow.hide()
+        
+        # restore state
+        #active_filters:list[str] = json.loads( FesWidget.global_settings().value("active_filters", "[]") )
+        active_filters:list[str] = FesWidget.global_settings().value("active_filters", [])
+        is_active = filter_widget.name() in active_filters
+        subwindow.show() if is_active else subwindow.hide()
 
         # add action
         action = self._filters_menu.addAction( filter_widget.name() )
         action.setObjectName( filter_widget.name() )
         action.triggered.connect( self._filter_action_clicked )
         action.setCheckable(True)
+        action.setChecked(is_active)
 
     def add_processor_widget( self, processor_widget:ProcessorWidget ) -> None:
         if self.processor_widget(processor_widget.name() ) != None:
@@ -362,19 +428,28 @@ class FesMainWindow(QMainWindow):
         # add subwindow
         subwindow = self._mdi.addSubWindow(processor_widget, QtCore.Qt.WindowMinMaxButtonsHint)
         subwindow.setWindowTitle(processor_widget.name())
-        subwindow.hide()
+        active_processor_name = FesWidget.global_settings().value("active_processor")    
+        is_active = processor_widget.name() == active_processor_name
+        subwindow.show() if is_active else subwindow.hide()
 
         # add action
         action = self._processors_menu.addAction( processor_widget.name() )
         action.setObjectName( processor_widget.name() )
         action.triggered.connect( self._processor_action_clicked )
         action.setCheckable(True)
+        action.setChecked(is_active)
 
     def before_processing( self, base_directory:str ) -> None:
         for subwindow in self._mdi.subWindowList():
             widget = subwindow.widget()
             if isinstance(widget, FilterOrProcessorWidget):
                 widget.before_processing(base_directory)
+
+    def post_processing( self ) -> None:
+        for subwindow in self._mdi.subWindowList():
+            widget = subwindow.widget()
+            if isinstance(widget, FilterOrProcessorWidget):
+                widget.post_processing()
 
     def active_processor( self ) -> Union[None, ProcessorWidget]:        
         for curr_action in self._processors_menu.actions():
@@ -392,6 +467,11 @@ class FesMainWindow(QMainWindow):
         subwindow = filter.parent()                        
         subwindow.show() if checked else subwindow.hide()
 
+        #active_filters:list[str] = json.loads( FesWidget.global_settings().value("active_filters", "[]") )
+        active_filters:list[str] = FesWidget.global_settings().value("active_filters", [])
+        active_filters.append( filter_widget_name ) if checked else active_filters.remove( filter_widget_name )
+        FesWidget.global_settings().setValue("active_filters", active_filters)
+
     def _processor_action_clicked( self, checked:bool ):   
         # get sender and processor
         action = self.sender()
@@ -407,6 +487,8 @@ class FesMainWindow(QMainWindow):
         for curr_action in self._processors_menu.actions():
             curr_action.setChecked(curr_action.text() == processor_name)
 
+        FesWidget.global_settings().setValue("active_processor", processor_name)    
+
     def use_file( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
         active_filters:list[FilterWidget] = []
         for curr_action in self._filters_menu.actions():
@@ -420,6 +502,7 @@ class FesMainWindow(QMainWindow):
         return True
     
 if __name__ == '__main__':
+    #FesWidget.global_settings().clear()
     app = QApplication(sys.argv)
     fes_main_window = FesMainWindow()
     fes_main_window.show()
