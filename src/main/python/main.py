@@ -5,7 +5,7 @@ from typing import Union, Any
 # pip imports
 from filehash import FileHash
 from PyQt5 import QtCore
-from PyQt5.QtCore import Qt, QSettings
+from PyQt5.QtCore import Qt, QSettings, QEvent
 from PyQt5.QtWidgets import QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, \
     QListWidget, QFileDialog, QAbstractItemView, QMessageBox, QProgressDialog, QApplication, QLabel, QTextEdit, \
     QSplitter, QGroupBox, QMainWindow, QComboBox, QMdiArea, QMenu, QAction, QErrorMessage
@@ -378,7 +378,18 @@ class FesMainWindow(QMainWindow):
 
         # finalize
         self.setCentralWidget(self._mdi)    
-        self.setWindowTitle("File Essentials")       
+        self.setWindowTitle("File Essentials")  
+
+        # restore
+        maximized = FesWidget.global_settings().value("maximized", False)
+        if maximized:
+            self.setWindowState( Qt.WindowMaximized )
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.WindowStateChange:
+            FesWidget.global_settings().setValue("maximized", self.windowState() == Qt.WindowMaximized)
+            #if self.windowState() & Qt.WindowMaximized:
+                #pass
 
     def filter_widget(self, name:str) -> Union[FilterWidget, None]:      
         #print(f'self._mdi.subWindowList(): {self._mdi.subWindowList()}')  
