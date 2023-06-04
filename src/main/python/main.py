@@ -450,6 +450,15 @@ class FesMainWindow(QMainWindow):
         action.setCheckable(True)
         action.setChecked(is_active)
 
+    def _recreate_filter_menu(self):
+        self._filters_menu.clear()
+        # TODO
+        # action = self._filters_menu.addAction( filter_widget.name() )
+        # action.setObjectName( filter_widget.name() )
+        # action.triggered.connect( self._filter_action_clicked )
+        # action.setCheckable(True)
+        # action.setChecked(is_active)
+
     def before_processing( self, base_directory:str ) -> None:
         for subwindow in self._mdi.subWindowList():
             widget = subwindow.widget()
