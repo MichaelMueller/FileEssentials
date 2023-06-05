@@ -5,11 +5,12 @@ from typing import Union, Any
 # pip imports
 from filehash import FileHash
 from PyQt5 import QtCore
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtCore import Qt, QSettings, QEvent
 from PyQt5.QtWidgets import QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, \
     QListWidget, QFileDialog, QAbstractItemView, QMessageBox, QProgressDialog, QApplication, QLabel, QTextEdit, \
-    QSplitter, QGroupBox, QMainWindow, QComboBox, QMdiArea, QMenu, QAction, QErrorMessage, QScrollArea
+    QSplitter, QGroupBox, QMainWindow, QComboBox, QMdiArea, QMenu, QAction, QErrorMessage, QScrollArea, QButtonGroup, \
+    QRadioButton, QSizePolicy
 
 # base classes
 class FesWidget(QWidget):  
@@ -121,7 +122,7 @@ class FesDirChooser(FesWidget):
         self._start_processing()
 
     def select_directory_button_clicked(self):
-        dir = str (QFileDialog.getExistingDirectory(self, "Select Directory") )
+        dir = str (QFileDialog.getExistingDirectory(self, "Select Directory", directory=self._base_directory.text() ) )
         self.set_base_directory(dir, True)
 
     def _start_processing(self):
@@ -246,6 +247,7 @@ class DeDuplicator(ProcessorWidget):
 
         self._hasher = None
         self._hashes:dict[str, list[str]] = {}
+        self._button_groups:dict[str, QButtonGroup] = {}
 
         # self._text_widget = QTextEdit()
         # self._text_widget.setReadOnly(True)
@@ -267,7 +269,7 @@ class DeDuplicator(ProcessorWidget):
             hash = self._hasher.hash_file(abs_file_path)
             if not hash in self._hashes:
                 self._hashes[hash] = []
-            self._hashes[hash].append( rel_file_path )
+            self._hashes[hash].append( abs_file_path )
 
     def before_processing( self, base_directory:str ) -> None:
         self._hasher = FileHash('md5')
@@ -282,43 +284,64 @@ class DeDuplicator(ProcessorWidget):
             if child.widget():
                 child.widget().deleteLater()
 
+        duplicates_selection_widget_layout = QVBoxLayout()
+        self._button_groups:dict[str, QButtonGroup] = {}
         # rebuild
         for hash, hashed_files in self._hashes.items():
             if len(hashed_files) > 1:
                 #self._text_widget.append(f"Found duplicates: {hashed_files}")
                 layout = QHBoxLayout()
-
-                for file in hashed_files:
-                    file_layout = QVBoxLayout()
-                    file_layout.addWidget(QLabel(file))
-                    file_widget = QWidget
-
-                    layout.addWidget( QLabel(file) )
-
                 widget = QWidget()
+                button_group = QButtonGroup( widget )
+                self._button_groups[hash] = button_group
+
+                for idx, file in enumerate(hashed_files):
+                    rad_button = QRadioButton(f"Keep {os.path.basename(file)}")
+                    rad_button.setChecked( idx + 1 == len(hashed_files) )
+                    rad_button.setObjectName( file )
+                    button_group.addButton( rad_button )
+
+                    file_layout = QVBoxLayout()
+                    _, file_ext = os.path.splitext( file )
+                    #print(f'file: {file}')
+                    pixmap = QPixmap( file ) if file_ext.lower() in [".gif", ".jpeg", ".jpg", ".png", ".bmp"] else QPixmap( os.path.abspath( os.path.dirname(__file__) + "/../icons/linux/128.png" ) )
+                    pixmap = pixmap.scaledToWidth( 128 )
+                    label = QLabel()
+                    label.setPixmap( pixmap )
+                    #label.setStyleSheet("width: 100%; height: auto;")
+                    #label.setScaledContents(True)
+                    file_layout.addWidget( label )
+                    file_layout.addWidget( rad_button )
+                    file_layout.addStretch()
+
+                    file_widget = QWidget()
+                    file_widget.setLayout( file_layout )
+
+                    layout.addWidget( file_widget )
+                    layout.addStretch()
+
                 widget.setLayout( layout )
                 scroll_area = QScrollArea()
                 scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
                 scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
                 scroll_area.setWidgetResizable(True)
                 scroll_area.setWidget(widget)
-                self._layout.addWidget( scroll_area )
+                scroll_area.setContentsMargins(0,0,0,0)
+                scroll_area.setFrameStyle( Qt.FramelessWindowHint )
+                duplicates_selection_widget_layout.addWidget( scroll_area )
         
-        self._layout.addStretch()
-        #self.update()
-        #self.resize( self._layout.minimumSize().width(), self._layout.minimumSize().height() )
-        # self.parent().update()
-
-        # self.parent().adjustSize()
-        # self.parent().update()
-        # self.parent().hide()
-        # self.parent().show()
-        #self.parent().update()
-        #self.parent().resize( self._layout.sizeHint().width(), self._layout.sizeHint().height() )
-
+        duplicates_selection_widget_layout.addStretch()
+        duplicates_selection_widget = QWidget()
+        duplicates_selection_widget.setLayout( duplicates_selection_widget_layout )
+        duplicates_selection_widget_scroll_area = QScrollArea()
+        duplicates_selection_widget_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        duplicates_selection_widget_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        duplicates_selection_widget_scroll_area.setWidgetResizable( True )
+        duplicates_selection_widget_scroll_area.setWidget( duplicates_selection_widget )
+        self._layout.addWidget( duplicates_selection_widget_scroll_area )
         parent:QWidget = self.parent()
         
-        QtCore.QTimer.singleShot(10, lambda: self.parent().adjustSize() if parent.width() < self._layout.sizeHint().width() or parent.height() < self._layout.sizeHint().height() else None )
+        QtCore.QTimer.singleShot(20, lambda: self.parent().adjustSize() if parent.width() < self._layout.sizeHint().width() or parent.height() < self._layout.sizeHint().height() else None )
 
 class FileOrFolderFilter(FilterWidget):
     def __init__(self, parent=None):
