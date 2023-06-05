@@ -283,12 +283,16 @@ class DeDuplicator(ProcessorWidget):
                 child.widget().deleteLater()
 
         # rebuild
-        for hashed_files in self._hashes.values():
+        for hash, hashed_files in self._hashes.items():
             if len(hashed_files) > 1:
                 #self._text_widget.append(f"Found duplicates: {hashed_files}")
                 layout = QHBoxLayout()
 
                 for file in hashed_files:
+                    file_layout = QVBoxLayout()
+                    file_layout.addWidget(QLabel(file))
+                    file_widget = QWidget
+
                     layout.addWidget( QLabel(file) )
 
                 widget = QWidget()
