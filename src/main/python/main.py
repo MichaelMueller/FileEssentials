@@ -656,7 +656,10 @@ class FesMainWindow(QMainWindow):
         # finalize
         self.setCentralWidget(self._mdi)    
         self.setWindowTitle("File Essentials")  
-        self.setWindowIcon( QIcon( os.path.abspath( os.path.dirname(__file__) + "/../icons/Icon.ico" ) ) )
+        
+        appctxt = ApplicationContext()
+        #self.setWindowIcon( QIcon( os.path.abspath( os.path.dirname(__file__) + "/../icons/Icon.ico" ) ) )
+        self.setWindowIcon( QIcon( appctxt.get_resource("Icon.ico") ) )
 
         # restore        
         geometry = fes_settings.value("geometry", None)
