@@ -1,10 +1,10 @@
 # sys imports
-import sys, os, datetime, abc
+import sys, os, datetime, abc, time, shutil
 from typing import Union, Any
 
 # pip imports
 from filehash import FileHash
-from PyQt5 import QtCore
+from PyQt5 import QtCore, QtGui
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtCore import Qt, QSettings, QEvent
 from PyQt5.QtWidgets import QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, \
@@ -177,7 +177,10 @@ class FesDirChooser(FesWidget):
                     if processor_widget:
                         processor_widget.process( file_info[0], file_info[1], file_info[2] )
             except Exception as e:                
-                QtCore.QTimer.singleShot(2000, lambda: progress_dialog.setLabelText(f'Error: {e}') )
+                progress_dialog.setLabelText(f'Error: {e}')
+                time.sleep(0.5)
+                #error = str(e)
+                #QtCore.QTimer.singleShot(2000, lambda: print(error) )
 
             progress_dialog.setValue( i )
 
@@ -241,6 +244,32 @@ class FileStatisticsPrinter(ProcessorWidget):
         self._text_widget.setHtml("Processing directory <b>"+base_directory+"</b>")
         super().before_processing( base_directory )
     
+class PixmapLabel(QLabel):
+    def __init__(self, parent=None):
+        QLabel.__init__(self, parent)
+        self.setMinimumSize(1,1)
+        self.setScaledContents(False)
+
+        self._pixmap:QPixmap = None
+
+    def setPixmap ( self, p:QPixmap ) -> None:
+        self._pixmap = p;
+        super().setPixmap( self._scaled_pixmap() )
+
+    def _scaled_pixmap(self) -> QPixmap:
+        return self._pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    def heightForWidth( self, width:int ) -> int:
+        return self.height() if self._pixmap.isNull() else float(self._pixmap.height()*width)/self._pixmap.width()
+
+    def sizeHint(self) -> QtCore.QSize:
+        w = self.width()
+        return QtCore.QSize( w, self.heightForWidth(w) )
+    
+    def resizeEvent(self, e: QtGui.QResizeEvent ) -> None:
+        if self._pixmap.isNull() == False:
+            super().setPixmap(self._scaled_pixmap())
+
 class DeDuplicator(ProcessorWidget):
     def __init__(self, parent=None):
         ProcessorWidget.__init__(self, parent)
@@ -269,7 +298,7 @@ class DeDuplicator(ProcessorWidget):
             hash = self._hasher.hash_file(abs_file_path)
             if not hash in self._hashes:
                 self._hashes[hash] = []
-            self._hashes[hash].append( abs_file_path )
+            self._hashes[hash].append( rel_file_path )
 
     def before_processing( self, base_directory:str ) -> None:
         self._hasher = FileHash('md5')
@@ -277,14 +306,18 @@ class DeDuplicator(ProcessorWidget):
         #self._text_widget.setHtml("")
         super().before_processing( base_directory )
 
-    def post_processing(self) -> None:
+    def _clear_layout(self):
         # clear layout
         for i in reversed(range(self._layout.count())): 
             child = self._layout.takeAt(i)
             if child.widget():
                 child.widget().deleteLater()
 
+    def post_processing(self) -> None:
+        self._clear_layout()
+
         duplicates_selection_widget_layout = QVBoxLayout()
+        duplicates_selection_widget_layout.addWidget( QLabel(f'Duplicates in directory {self._base_directory}'))
         self._button_groups:dict[str, QButtonGroup] = {}
         # rebuild
         for hash, hashed_files in self._hashes.items():
@@ -295,18 +328,29 @@ class DeDuplicator(ProcessorWidget):
                 button_group = QButtonGroup( widget )
                 self._button_groups[hash] = button_group
 
-                for idx, file in enumerate(hashed_files):
-                    rad_button = QRadioButton(f"Keep {os.path.basename(file)}")
+                for idx, rel_file_path in enumerate(hashed_files):
+                    file = os.path.abspath( self._base_directory + "/" +rel_file_path )
+                    print(file)
+                    rad_button = QRadioButton(f"Keep {rel_file_path}")
                     rad_button.setChecked( idx + 1 == len(hashed_files) )
-                    rad_button.setObjectName( file )
+                    rad_button.setObjectName( rel_file_path )
                     button_group.addButton( rad_button )
 
                     file_layout = QVBoxLayout()
                     _, file_ext = os.path.splitext( file )
                     #print(f'file: {file}')
-                    pixmap = QPixmap( file ) if file_ext.lower() in [".gif", ".jpeg", ".jpg", ".png", ".bmp"] else QPixmap( os.path.abspath( os.path.dirname(__file__) + "/../icons/linux/128.png" ) )
-                    pixmap = pixmap.scaledToWidth( 128 )
-                    label = QLabel()
+                    pixmap = None
+                    try:
+                        if file_ext.lower() in [".gif", ".jpeg", ".jpg", ".png", ".bmp"]:
+                            pixmap = QPixmap( file )
+                    except:
+                        pass
+                    if pixmap is None:
+                        pixmap = QPixmap( os.path.abspath( os.path.dirname(__file__) + "/../icons/linux/128.png" ) )
+                    #pixmap = pixmap.scaledToWidth( 128 )
+                    #label = QLabel()
+                    #label.setPixmap( pixmap )
+                    label = PixmapLabel()
                     label.setPixmap( pixmap )
                     #label.setStyleSheet("width: 100%; height: auto;")
                     #label.setScaledContents(True)
@@ -317,7 +361,8 @@ class DeDuplicator(ProcessorWidget):
                     file_widget = QWidget()
                     file_widget.setLayout( file_layout )
 
-                    layout.addWidget( file_widget )
+                    layout.addWidget( file_widget )#
+                    layout.setContentsMargins(0,0,0,0)
                     layout.addStretch()
 
                 widget.setLayout( layout )
@@ -330,7 +375,30 @@ class DeDuplicator(ProcessorWidget):
                 scroll_area.setFrameStyle( Qt.FramelessWindowHint )
                 duplicates_selection_widget_layout.addWidget( scroll_area )
         
-        duplicates_selection_widget_layout.addStretch()
+        backup_dir_path_label = QLabel("Backup Directory:")
+
+        self._backup_dir_path = QLineEdit()
+        self._backup_dir_path.setReadOnly(True)
+
+        select_backup_dir_path = QPushButton("Select")
+        select_backup_dir_path.clicked.connect(self.select_backup_dir_path)
+
+        self._remove_duplicates_button = QPushButton("Remove duplicates")
+        self._remove_duplicates_button.setDisabled( True )
+        self._remove_duplicates_button.clicked.connect(self.remove_duplicates)
+        
+        backup_dir_path = self.settings_value("backup_dir_path")
+        if backup_dir_path and os.path.isdir( backup_dir_path ):
+            self._backup_dir_path.setText( backup_dir_path )
+            self._remove_duplicates_button.setDisabled( False )
+
+        duplicates_selection_widget_layout.addWidget( backup_dir_path_label )
+        duplicates_selection_widget_layout.addWidget( self._backup_dir_path )
+        duplicates_selection_widget_layout.addWidget( select_backup_dir_path )
+        duplicates_selection_widget_layout.addWidget( self._remove_duplicates_button )
+
+        #duplicates_selection_widget_layout.addStretch()
+        duplicates_selection_widget_layout.setContentsMargins(0,0,0,0)
         duplicates_selection_widget = QWidget()
         duplicates_selection_widget.setLayout( duplicates_selection_widget_layout )
         duplicates_selection_widget_scroll_area = QScrollArea()
@@ -338,9 +406,44 @@ class DeDuplicator(ProcessorWidget):
         duplicates_selection_widget_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         duplicates_selection_widget_scroll_area.setWidgetResizable( True )
         duplicates_selection_widget_scroll_area.setWidget( duplicates_selection_widget )
+        duplicates_selection_widget_scroll_area.setContentsMargins(0,0,0,0)
+        duplicates_selection_widget_scroll_area.setFrameStyle( Qt.FramelessWindowHint )
         self._layout.addWidget( duplicates_selection_widget_scroll_area )
         parent:QWidget = self.parent()
         
+        QtCore.QTimer.singleShot(20, lambda: self.parent().adjustSize() if parent.width() < self._layout.sizeHint().width() or parent.height() < self._layout.sizeHint().height() else None )
+
+    def select_backup_dir_path(self):
+        dir = str (QFileDialog.getExistingDirectory(self, "Select Directory", directory=self._backup_dir_path.text() ) )
+        if dir:
+            dir = os.path.abspath( dir )
+            self.set_settings_value("backup_dir_path", dir)
+            self._backup_dir_path.setText( dir )
+            self._remove_duplicates_button.setEnabled( True )
+        else:
+            self._backup_dir_path.setText( "" )
+            self._remove_duplicates_button.setEnabled( False )
+    
+    def remove_duplicates(self):
+        backup_dir = self._backup_dir_path.text()
+        for hash, button_group in self._button_groups.items():
+            rel_file_path_to_keep = button_group.checkedButton().objectName()
+            for rel_path in self._hashes[hash]:
+                if rel_path == rel_file_path_to_keep:
+                    print(f'Would keep {rel_path}')
+                    continue
+                else:
+                    abs_path = os.path.abspath( self._base_directory + "/" + rel_path )
+                    target_path = os.path.abspath( backup_dir + "/" + rel_path )
+                    parent_backup_sub_dir = os.path.dirname( target_path )
+                    os.makedirs( parent_backup_sub_dir, exist_ok=True )
+                    print(f'Would move {abs_path} to {target_path}')
+                    shutil.move( abs_path, target_path )
+        self._clear_layout()
+        
+        # self._layout.addWidget( self._text_widget )
+        self._layout.addWidget(QLabel("Please process a directory first"))
+        parent = self.parent()
         QtCore.QTimer.singleShot(20, lambda: self.parent().adjustSize() if parent.width() < self._layout.sizeHint().width() or parent.height() < self._layout.sizeHint().height() else None )
 
 class FileOrFolderFilter(FilterWidget):
@@ -426,6 +529,7 @@ class FesMainWindow(QMainWindow):
 
         # add subwindow
         subwindow = self._mdi.addSubWindow(FesDirChooser( self ), QtCore.Qt.WindowMinMaxButtonsHint )
+        #subwindow = self._mdi.addSubWindow(FesDirChooser( self ) )
         subwindow.setWindowTitle("Choose Directory")
         subwindow.show()
 
@@ -460,6 +564,10 @@ class FesMainWindow(QMainWindow):
         maximized = FesWidget.global_settings().value("maximized", False)
         if maximized:
             self.setWindowState( Qt.WindowMaximized )
+
+    def closeEvent(self, a0: QtGui.QCloseEvent) -> None:
+        #print("Close Event!")
+        return super().closeEvent(a0)
 
     def changeEvent(self, event):
         if event.type() == QEvent.WindowStateChange:
@@ -505,6 +613,7 @@ class FesMainWindow(QMainWindow):
         action.setObjectName( filter_widget.name() )
         action.triggered.connect( self._filter_action_clicked )
         action.setCheckable(True)
+        action.setToolTip( filter_widget.description() )
         #action.setChecked(is_active)
         self._reorder_filter_menu()
 
@@ -526,6 +635,7 @@ class FesMainWindow(QMainWindow):
         action.triggered.connect( self._processor_action_clicked )
         action.setCheckable(True)
         action.setChecked(is_active)
+        action.setToolTip( processor_widget.description() )
         self._reorder_filter_menu()
 
     def _reorder_filter_menu(self):
@@ -596,7 +706,9 @@ class FesMainWindow(QMainWindow):
         # get sender and processor
         action = self.sender()
         processor_name = action.objectName()
-
+        self.toggle_processor( processor_name, checked )
+    
+    def toggle_processor( self, processor_name, toggle:bool ):
         # hide all except current
         for subwindow in self._mdi.subWindowList():
             widget = subwindow.widget()
