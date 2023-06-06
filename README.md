@@ -24,10 +24,13 @@ or
 6. Example code:
 > 
     import sys
-    sys.path.append(r"E:\\git\\FileEssentials\\src\\main\\python") # TODO: ADAPT the path!!
-    import main
+
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QWidget, QVBoxLayout, QApplication, QLabel
+    from fbs_runtime.application_context.PyQt5 import ApplicationContext
+
+    sys.path.append("E:\\git\\FileEssentials\\src\\main\\python") # TODO: ADAPT the path!!
+    import main
 
     class CustomProcessor( main.ProcessorSubWindow ):    
         def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
@@ -53,11 +56,13 @@ or
         def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
             self.main_window().console().append( f'{rel_file_path}' )
 
+        
     if __name__ == '__main__':
         #main.fes_settings.clear()
 
-        app = QApplication(sys.argv)
+        appctxt = ApplicationContext()
         fes_main_window = main.FesMainWindow()
         fes_main_window.create_sub_window( CustomProcessor )
         fes_main_window.show()
-        app.exec_()
+        exit_code = appctxt.app.exec()
+        sys.exit(exit_code)

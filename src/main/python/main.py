@@ -23,7 +23,7 @@ def validate_dir(dir:str, prefix:str):
         raise ValueError(f'{prefix}Please select a directory!')
     if not os.path.isdir(dir):
         raise ValueError(f'{prefix}Not a valid directory: "{dir}"!')
-    
+  
 # base classes            
 class FesSubWindow(QMdiSubWindow):
     """ Each module is a subwindow """
@@ -31,11 +31,14 @@ class FesSubWindow(QMdiSubWindow):
     def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
         QMdiSubWindow.__init__(self, parent, flags)
 
+    def try_restore_geometry(self):
+               
         # restore state
-        geometry = self.settings_value("geometry")
-        if geometry is not None:
-            pass
-            #self.restoreGeometry( geometry )
+        geometry:tuple = self.settings_value("geometry")
+        #print(f'geometry in try_restore_geometry: {geometry}')
+        if isinstance( geometry, tuple ):
+            #pass
+            self.setGeometry( *geometry )
 
     def main_window( self ) -> Union[None, "FesMainWindow"]:
         curr_object = self
@@ -45,27 +48,31 @@ class FesSubWindow(QMdiSubWindow):
 
     def settings_value( self, name:str, default_value:Any=None ) -> Any:
         settings = fes_settings
-        #settings.beginGroup(self.name())
         return settings.value( self.__class__.__name__+"."+str(name), default_value )
 
     def set_settings_value( self, name:str, value:Any ) -> None:
         settings = fes_settings
-        #settings.beginGroup(self.name())
         settings.setValue( self.__class__.__name__+"."+str(name), value)
     
     def moveEvent(self, moveEvent: QtGui.QMoveEvent) -> None:
-        self.set_settings_value("geometry", self.saveGeometry())
+        #print(f'geometry in moveEvent: {self.geometry().getRect()}')
+        self.set_settings_value("geometry", self.geometry().getRect())
         return super().moveEvent(moveEvent)
 
     def resizeEvent(self, resizeEvent: QtGui.QResizeEvent) -> None:
-        self.set_settings_value("geometry", self.saveGeometry())
+        #print(f'geometry in resizeEvent: {self.geometry().getRect()}')
+        self.set_settings_value("geometry", self.geometry().getRect())
         return super().resizeEvent(resizeEvent)
 
+    def changeEvent(self, event):        
+        if event.type() == QEvent.WindowStateChange:
+            #print(f"State changed {self.windowState()}")
+            pass
+        super().changeEvent(event)
+        
     def closeEvent(self, a0: QtGui.QCloseEvent) -> None:
-        #print("Close Event!")
         a0.ignore()
         self.main_window().set_sub_window_visible( self, False )
-        #return super().closeEvent(a0)
         return
     
     def name( self ) -> str:
@@ -417,7 +424,7 @@ class Deduplicator(ProcessorSubWindow):
 
         # internal state
         self._hasher:FileHash = None
-        self._hashes:list[str] = []
+        self._hashes:dict[str, str] = {}
         self._total_files = 0
         self._files_removed = 0
 
@@ -425,9 +432,27 @@ class Deduplicator(ProcessorSubWindow):
         self._dry_run = QCheckBox("Dry run")
         self._dry_run.setChecked(True)
 
+        self._hash_method = QComboBox()
+        self._hash_method.addItem("md5")
+        self._hash_method.addItem("sha1")    
+        self._hash_method.currentTextChanged.connect( lambda changed_text: self.set_settings_value("hash_method", changed_text) )
+        self._hash_method.setCurrentText( self.settings_value( "hash_method", "md5" ) )
+
+        self._backup_dir_path = QLineEdit()
+        self._backup_dir_path.setReadOnly(True)
+        self._backup_dir_path.setStyleSheet("min-width: 240px")
+        self._backup_dir_path.setText( self.settings_value("backup_dir_path") )
+        select_backup_dir_path_button = QPushButton("Change")
+        select_backup_dir_path_button.clicked.connect(self._select_backup_dir_path)
+
         layout = QVBoxLayout()
         layout.addWidget( QLabel( self.description() ) )
         layout.addWidget( self._dry_run )
+        layout.addWidget( QLabel("Hashing algorithm") )
+        layout.addWidget( self._hash_method )
+        layout.addWidget( QLabel("Backup Directory:") )
+        layout.addWidget( self._backup_dir_path )
+        layout.addWidget( select_backup_dir_path_button )
         layout.addStretch()
 
         widget = QWidget()
@@ -435,12 +460,23 @@ class Deduplicator(ProcessorSubWindow):
 
         self.setWidget(widget)        
 
+    def _select_backup_dir_path(self):
+        dir = str (QFileDialog.getExistingDirectory(self, "Select Directory", directory=self._backup_dir_path.text() ) )
+        if dir:
+            dir = os.path.abspath( dir )
+            self._backup_dir_path.setText( dir )
+        else:
+            dir = ""
+            self._backup_dir_path.setText( "" )
+        
+        self.set_settings_value("backup_dir_path", dir)
+
     def description( self ) -> str:
         return "Removes duplicate files from a directory"
     
     def before_processing( self ) -> None:
-        self._hasher = FileHash('md5')
-        self._hashes = []
+        self._hasher = FileHash(self._hash_method.currentText())
+        self._hashes = {}
         self._total_files = 0
         self._files_removed = 0
         self.main_window().console().reset()
@@ -455,10 +491,31 @@ class Deduplicator(ProcessorSubWindow):
                 dry_run = self._dry_run.isChecked()
                 prefix = "[DRY RUN] Would remove" if dry_run else "Removing"
                 self.main_window().console().append(f'{prefix} duplicate file <b>{rel_file_path}</b> with hash {hash}')
+
+                # make backup
+                backup_dir = self._backup_dir_path.text()
+                if os.path.isdir( backup_dir ):
+                    first_file_abs_path = self._hashes[hash]
+                    _, first_file_ext = os.path.splitext(first_file_abs_path)
+                    backup_first_file = os.path.abspath( backup_dir + "/" + hash + "_0" + first_file_ext )
+                    if not os.path.exists(backup_first_file):
+                        self.main_window().console().append(f'Copying first file from {first_file_abs_path} to {backup_first_file}')
+                        shutil.copy( first_file_abs_path, backup_first_file )
+
+                    i = 1
+                    _, ext = os.path.splitext(abs_file_path)
+                    while True:
+                        backup_file_path = os.path.abspath( backup_dir + "/" + hash + "_" + str(i) + ext )
+                        if not os.path.exists( backup_file_path ):
+                            break
+                        i += 1
+                    self.main_window().console().append(f'Copying duplicate file from {rel_file_path} to {backup_file_path}')
+                    shutil.copy( abs_file_path, backup_file_path )
+
                 if dry_run is False:
                     os.remove( abs_file_path )
             else:
-                self._hashes.append( hash )
+                self._hashes[hash] = abs_file_path
     
     def post_processing(self) -> None:
         dry_run = self._dry_run.isChecked()
@@ -587,8 +644,8 @@ class FesMainWindow(QMainWindow):
         self.create_sub_window( FesDirChooser )
 
         # add filters
-        self.create_sub_window( BasicFilter )
         self.create_sub_window( DicomFilter )
+        self.create_sub_window( BasicFilter )
 
         # add processor
         self.create_sub_window( FilePrinter )
@@ -601,12 +658,21 @@ class FesMainWindow(QMainWindow):
         self.setWindowTitle("File Essentials")  
         self.setWindowIcon( QIcon( os.path.abspath( os.path.dirname(__file__) + "/../icons/Icon.ico" ) ) )
 
-        # restore
-        maximized = fes_settings.value("maximized", False)
-        #print(f'maximized in ctor: {maximized}')
-        if maximized is not False:
-            #print(f'maximized in ctor 2: {maximized}')
-            self.setWindowState( Qt.WindowMaximized )
+        # restore        
+        geometry = fes_settings.value("geometry", None)
+        #print(f'geometry: {geometry}')
+        if isinstance(geometry, QtCore.QByteArray):
+            #print("Restore geometry")
+            self.restoreGeometry(geometry)
+        window_state = fes_settings.value("window_state", None)
+        if isinstance(window_state, QtCore.QByteArray):
+            self.restoreState(window_state)
+
+        # maximized = fes_settings.value("maximized", False)
+        # #print(f'maximized in ctor: {maximized}')
+        # if maximized is not False:
+        #     #print(f'maximized in ctor 2: {maximized}')
+        #     self.setWindowState( Qt.WindowMaximized )
 
     def create_sub_window(self, class_:type):
         # assert correct class before creation
@@ -622,6 +688,7 @@ class FesMainWindow(QMainWindow):
             return            
         sub_window.setWindowTitle( sub_window.name() )
         self._mdi.addSubWindow( sub_window )
+        sub_window.try_restore_geometry()
 
         # build the action in the corresponding menu
         action = QAction(self)
@@ -678,7 +745,7 @@ class FesMainWindow(QMainWindow):
                 self._set_sub_window_visible_by_class_and_name( ProcessorSubWindow, active_processor_name, False )
                                 
             active_processor_name = sub_window.name() if visible else None
-            print(f'active_processor: {active_processor_name}')
+            #print(f'active_processor: {active_processor_name}')
             fes_settings.setValue(f'active_processor', active_processor_name)
 
         # apply the state
@@ -824,11 +891,27 @@ class FesMainWindow(QMainWindow):
         progress_dialog.close()
         progress_dialog = None
 
-    def changeEvent(self, event):
+    def changeEvent(self, event):        
         if event.type() == QEvent.WindowStateChange:
-            maximized = self.windowState() == Qt.WindowMaximized
-            #print(f'maximized in changeEvent(): {maximized}')
-            fes_settings.setValue("maximized", maximized)
+            fes_settings.setValue("window_state", self.saveState())
+        super().changeEvent(event)
+
+    def moveEvent(self, moveEvent: QtGui.QMoveEvent) -> None:
+        fes_settings.setValue("geometry", self.saveGeometry())
+        super().moveEvent(moveEvent)
+
+    def resizeEvent(self, resizeEvent: QtGui.QResizeEvent) -> None:
+        fes_settings.setValue("geometry", self.saveGeometry())
+        super().resizeEvent(resizeEvent)
+    
+    # def closeEvent(self, event):
+    #     #print("Closing...")
+    #     geometry = self.saveGeometry()
+    #     #print(f'geometry in close event: {geometry}')
+    #     fes_settings.setValue("geometry", geometry)
+    #     fes_settings.setValue("window_state", self.saveState())
+    #     fes_settings.sync()
+    #     super().closeEvent(event)
 
     def _menu_by_class( self, sub_window:FesSubWindow ):
         menus_by_class = { BasicSubWindow: self._basic_tools_menu, FilterSubWindow: self._filters_menu, ProcessorSubWindow: self._processors_menu }
@@ -856,7 +939,8 @@ class FesMainWindow(QMainWindow):
             self._set_sub_window_visible_by_class_and_name( FilterSubWindow, filter_name, False )
         
 if __name__ == '__main__':
-    #fes_settings.clear()
+    # fes_settings.clear()
+
     appctxt = ApplicationContext()       # 1. Instantiate ApplicationContext
     fes_main_window = FesMainWindow()
     fes_main_window.show()
