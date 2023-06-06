@@ -2,5 +2,6 @@
     "app_name": "FileEssentials",
     "author": "Michael Mueller",
     "main_module": "src/main/python/main.py",
-    "version": "1.0.0"
+    "version": "1.0.0",
+    "hidden_imports": ["pydicom.encoders.gdcm", "pydicom.encoders.pylibjpeg"]
 }

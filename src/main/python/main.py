@@ -3,6 +3,7 @@ import sys, os, datetime, abc, time, shutil
 from typing import Union, Any, List, Dict
 
 # pip imports
+from fbs_runtime.application_context.PyQt5 import ApplicationContext
 from filehash import FileHash
 from PyQt5 import QtCore, QtGui
 from PyQt5.QtGui import QIcon, QPixmap
@@ -33,7 +34,8 @@ class FesSubWindow(QMdiSubWindow):
         # restore state
         geometry = self.settings_value("geometry")
         if geometry is not None:
-            self.restoreGeometry( geometry )
+            pass
+            #self.restoreGeometry( geometry )
 
     def main_window( self ) -> Union[None, "FesMainWindow"]:
         curr_object = self
@@ -855,8 +857,9 @@ class FesMainWindow(QMainWindow):
         
 if __name__ == '__main__':
     #fes_settings.clear()
-    
-    app = QApplication(sys.argv)
+    appctxt = ApplicationContext()       # 1. Instantiate ApplicationContext
     fes_main_window = FesMainWindow()
     fes_main_window.show()
-    app.exec_()
+    exit_code = appctxt.app.exec()      # 2. Invoke appctxt.app.exec()
+    sys.exit(exit_code)
+    
