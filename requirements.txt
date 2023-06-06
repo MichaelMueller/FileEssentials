@@ -5,3 +5,4 @@ PyQtWebEngine
 QDarkStyle
 filehash
 pydicom
+pywin32
