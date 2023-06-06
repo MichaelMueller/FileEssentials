@@ -16,6 +16,13 @@ import pydicom
 # module variables
 fes_settings = QSettings(QSettings.UserScope, "https://github.com/MichaelMueller", "File Essentials")
 
+# functions
+def validate_dir(dir:str, prefix:str):
+    if not dir:
+        raise ValueError(f'{prefix}Please select a directory!')
+    if not os.path.isdir(dir):
+        raise ValueError(f'{prefix}Not a valid directory: "{dir}"!')
+    
 # base classes            
 class FesSubWindow(QMdiSubWindow):
     """ Each module is a subwindow """
@@ -197,7 +204,7 @@ class FesDirChooser(BasicSubWindow):
         dir = str (QFileDialog.getExistingDirectory(self, "Select Directory", directory=self._base_directory.text() ) )
         self._base_directory.setText(dir)
         self._process_button.setDisabled(self._base_directory.text() == "")
-        self.main_window().set_base_directory(dir, True)
+        self.main_window().set_base_directory(dir, False)
 
 class FilePrinter(ProcessorSubWindow):
     def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
@@ -228,6 +235,8 @@ class FilePrinter(ProcessorSubWindow):
         self.main_window().console().append( f'{prefix} {rel_file_path} at level {level})' )
 
     def before_processing( self ) -> None:
+        self._num_dirs = 0
+        self._num_files = 0
         self.main_window().console().reset()
         self.main_window().console().append("Items in directory <b>"+self.main_window().base_directory()+"</b>:")
 
@@ -289,11 +298,8 @@ class ChronologicSorter(ProcessorSubWindow):
     def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
         if not os.path.isfile( abs_file_path ):
             return
+        validate_dir( self._output_dir_path.text(), self.name() )
         output_dir_path = self._output_dir_path.text()
-        if not output_dir_path:
-            raise ValueError(f'{self.name()} - Please select an output directory!')
-        if not os.path.isdir(output_dir_path):
-            raise ValueError(f'{self.name()} - Not a valid output directory: "{output_dir_path}"!')
         
         file_stat = os.stat(abs_file_path)
         timestamp = file_stat.st_ctime if self._time_type.currentText() == "Change/Creation Time" else file_stat.st_mtime
@@ -303,11 +309,11 @@ class ChronologicSorter(ProcessorSubWindow):
 
         file_output_dir_path = os.path.abspath( output_dir_path + "/" + year_literal + "/" + month_literal )
         file_output_path = os.path.abspath( file_output_dir_path + "/" + os.path.basename( abs_file_path ) )
-        i = 1
-        while os.path.exists(file_output_path):
-            i += 1
-            file_name, ext = os.path.splitext(file_output_path)
-            file_output_path = file_name + f"_{i}" + ext
+        # i = 1
+        # while os.path.exists(file_output_path):
+        #     i += 1
+        #     file_name, ext = os.path.splitext(file_output_path)
+        #     file_output_path = file_name + f"_{i}" + ext
         #print( f'Would move {abs_file_path} to {file_output_path}')
         if not os.path.exists( file_output_dir_path ):
             self.main_window().console().append(f'Creating directory <b>{file_output_dir_path}</b>')
@@ -327,6 +333,81 @@ class ChronologicSorter(ProcessorSubWindow):
         
         self.set_settings_value("output_dir_path", dir)
 
+class DirectoryComparer(ProcessorSubWindow):
+    def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
+        ProcessorSubWindow.__init__(self, parent, flags)
+
+        # internal state
+        self._num_dirs_missing = 0
+        self._num_files_missing = 0
+
+        # build widgets
+        target_dir_path_label = QLabel("Target Directory:")
+        self._target_dir_path = QLineEdit()
+        self._target_dir_path.setReadOnly(True)
+        self._target_dir_path.setStyleSheet("min-width: 240px")
+        self._target_dir_path.setText( self.settings_value("target_dir_path") )
+        select_target_dir_path_button = QPushButton("Change")
+        select_target_dir_path_button.clicked.connect(self._select_target_dir_path)
+        layout = QVBoxLayout()
+
+        layout.addWidget(target_dir_path_label)
+        layout.addWidget(self._target_dir_path)
+        layout.addWidget(select_target_dir_path_button)
+        layout.addStretch()
+
+        widget = QWidget()
+        widget.setLayout( layout )
+
+        self.setWidget(widget)        
+
+    def name( self ) -> str:
+        return "DirectoryComparer"
+
+    def description( self ) -> str:
+        return "Compares the base directory with the target directory for missing files and/or directories"
+    
+    def before_processing( self ) -> None:    
+        self._num_dirs_missing = 0
+        self._num_files_missing = 0    
+        self.main_window().console().reset()
+
+        validate_dir( self._target_dir_path.text(), self.name() )
+        self.main_window().console().append(f"Missing files and directories in {self._target_dir_path.text()}")
+
+    def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
+        validate_dir( self._target_dir_path.text(), self.name() )
+
+        target_dir_path = self._target_dir_path.text()
+        abs_file_path_in_target_dir = os.path.abspath( target_dir_path + "/" + rel_file_path )
+
+        if not os.path.exists( abs_file_path_in_target_dir ):
+            if os.path.isdir( abs_file_path ):
+                type_ = "directory"
+                self._num_dirs_missing += 1
+            elif os.path.isfile( abs_file_path ):
+                type_ = "file"
+                self._num_files_missing += 1
+            self.main_window().console().append(f'Missing {type_} "{rel_file_path}"')
+
+    def _select_target_dir_path(self):
+        dir = str (QFileDialog.getExistingDirectory(self, "Select Directory", directory=self._target_dir_path.text() ) )
+        if dir:
+            dir = os.path.abspath( dir )
+            self._target_dir_path.setText( dir )
+        else:
+            dir = ""
+            self._target_dir_path.setText( "" )
+        
+        self.set_settings_value("target_dir_path", dir)
+        
+    def post_processing( self ) -> None:
+        validate_dir( self._target_dir_path.text(), self.name() )
+        
+        self.main_window().console().append(f"Overall missing statistics for directory <b>"+self._target_dir_path.text()+"</b> compared to <b>"+self.main_window().base_directory()+"</b>:")
+        self.main_window().console().append(f"{self._num_dirs_missing+self._num_files_missing} items mssing")
+        self.main_window().console().append(f"{self._num_dirs_missing} directories missing")
+        self.main_window().console().append(f"{self._num_files_missing} files missing")
 
 class Deduplicator(ProcessorSubWindow):
     def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
@@ -381,184 +462,8 @@ class Deduplicator(ProcessorSubWindow):
         dry_run = self._dry_run.isChecked()
         prefix = "[DRY RUN] Would have removed" if dry_run else "Removed"
         self.main_window().console().append(f'In directory {self.main_window().base_directory()}: {prefix} {self._files_removed} duplicates out of {self._total_files} files')
-        
-
-# class DeDuplicator(ProcessorSubWindow):
-#     def __init__(self, parent=None):
-#         ProcessorSubWindow.__init__(self, parent)
-
-#         self._hasher = None
-#         self._hashes:dict[str, list[str]] = {}
-#         self._button_groups:dict[str, QButtonGroup] = {}
-
-#         # self._text_widget = QTextEdit()
-#         # self._text_widget.setReadOnly(True)
-
-#         self._layout = QVBoxLayout()
-#         # self._layout.addWidget( self._text_widget )
-#         self._layout.addWidget(QLabel("Please process a directory first"))
-
-#         self.setLayout(self._layout)
-
-#     def name( self ) -> str:
-#         return "DeDuplicator"
-
-#     def description( self ) -> str:
-#         return "Removes duplicates in the base directory"
-    
-#     def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
-#         if os.path.isfile( abs_file_path ):
-#             hash = self._hasher.hash_file(abs_file_path)
-#             if not hash in self._hashes:
-#                 self._hashes[hash] = []
-#             self._hashes[hash].append( (abs_file_path, rel_file_path) )
-
-#     def before_processing( self, base_directory:str ) -> None:
-#         self._hasher = FileHash('md5')
-#         self._hashes = {}
-#         super().before_processing( base_directory )
-
-#     def _clear_layout(self):
-#         # clear layout
-#         for i in reversed(range(self._layout.count())): 
-#             child = self._layout.takeAt(i)
-#             if child.widget():
-#                 child.widget().deleteLater()
-
-#     def post_processing(self) -> None:
-#         self._clear_layout()
-
-#         duplicates_selection_widget_layout = QVBoxLayout()
-#         duplicates_selection_widget_layout.addWidget( QLabel(f'Duplicates in directory {self._base_directory}'))
-#         self._button_groups:dict[str, QButtonGroup] = {}
-#         # rebuild
-#         for hash, hashed_files in self._hashes.items():
-#             if len(hashed_files) > 1:
-#                 #self._text_widget.append(f"Found duplicates: {hashed_files}")
-#                 layout = QHBoxLayout()
-#                 widget = QWidget()
-#                 button_group = QButtonGroup( widget )
-#                 self._button_groups[hash] = button_group
-
-#                 for idx, path_tuple in enumerate(hashed_files):
-#                     abs_file_path, rel_file_path = path_tuple
-#                     print(abs_file_path)
-#                     rad_button = QRadioButton(f"Keep {rel_file_path}")
-#                     #rad_button.setChecked( idx + 1 == len(hashed_files) )
-#                     rad_button.setChecked( idx == 0 )
-#                     rad_button.setObjectName( rel_file_path )
-#                     button_group.addButton( rad_button )
-
-#                     file_layout = QVBoxLayout()
-#                     _, file_ext = os.path.splitext( abs_file_path )
-#                     #print(f'file: {file}')
-#                     pixmap = None
-#                     try:
-#                         if file_ext.lower() in [".gif", ".jpeg", ".jpg", ".png", ".bmp"]:
-#                             pixmap = QPixmap( abs_file_path )
-#                     except:
-#                         pass
-#                     if pixmap is None:
-#                         pixmap = QPixmap( os.path.abspath( os.path.dirname(__file__) + "/../icons/linux/128.png" ) )
-#                     #pixmap = pixmap.scaledToWidth( 128 )
-#                     #label = QLabel()
-#                     #label.setPixmap( pixmap )
-#                     label = PixmapLabel()
-#                     label.setPixmap( pixmap )
-#                     #label.setStyleSheet("width: 100%; height: auto;")
-#                     #label.setScaledContents(True)
-#                     file_layout.addWidget( label )
-#                     file_layout.addWidget( rad_button )
-#                     file_layout.addStretch()
-
-#                     file_widget = QWidget()
-#                     file_widget.setLayout( file_layout )
-
-#                     layout.addWidget( file_widget )
-#                     layout.setContentsMargins(0,0,0,0)
-#                     layout.addStretch()
-
-#                 widget.setLayout( layout )
-#                 scroll_area = QScrollArea()
-#                 scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-#                 scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-#                 scroll_area.setWidgetResizable(True)
-#                 scroll_area.setWidget(widget)
-#                 scroll_area.setContentsMargins(0,0,0,0)
-#                 scroll_area.setFrameStyle( Qt.FramelessWindowHint )
-#                 duplicates_selection_widget_layout.addWidget( scroll_area )
-        
-#         backup_dir_path_label = QLabel("Backup Directory:")
-
-#         self._backup_dir_path = QLineEdit()
-#         self._backup_dir_path.setReadOnly(True)
-
-#         select_backup_dir_path = QPushButton("Select")
-#         select_backup_dir_path.clicked.connect(self.select_backup_dir_path)
-
-#         self._remove_duplicates_button = QPushButton("Remove duplicates")
-#         self._remove_duplicates_button.setDisabled( True )
-#         self._remove_duplicates_button.clicked.connect(self.remove_duplicates)
-        
-#         backup_dir_path = self.settings_value("backup_dir_path")
-#         if backup_dir_path and os.path.isdir( backup_dir_path ):
-#             self._backup_dir_path.setText( backup_dir_path )
-#             self._remove_duplicates_button.setDisabled( False )
-
-#         duplicates_selection_widget_layout.addWidget( backup_dir_path_label )
-#         duplicates_selection_widget_layout.addWidget( self._backup_dir_path )
-#         duplicates_selection_widget_layout.addWidget( select_backup_dir_path )
-#         duplicates_selection_widget_layout.addWidget( self._remove_duplicates_button )
-
-#         #duplicates_selection_widget_layout.addStretch()
-#         duplicates_selection_widget_layout.setContentsMargins(0,0,0,0)
-#         duplicates_selection_widget = QWidget()
-#         duplicates_selection_widget.setLayout( duplicates_selection_widget_layout )
-#         duplicates_selection_widget_scroll_area = QScrollArea()
-#         duplicates_selection_widget_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-#         duplicates_selection_widget_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-#         duplicates_selection_widget_scroll_area.setWidgetResizable( True )
-#         duplicates_selection_widget_scroll_area.setWidget( duplicates_selection_widget )
-#         duplicates_selection_widget_scroll_area.setContentsMargins(0,0,0,0)
-#         duplicates_selection_widget_scroll_area.setFrameStyle( Qt.FramelessWindowHint )
-#         self._layout.addWidget( duplicates_selection_widget_scroll_area )
-#         parent:QWidget = self.parent()
-        
-#         QtCore.QTimer.singleShot(20, lambda: self.parent().adjustSize() if parent.width() < self._layout.sizeHint().width() or parent.height() < self._layout.sizeHint().height() else None )
-
-#     def select_backup_dir_path(self):
-#         dir = str (QFileDialog.getExistingDirectory(self, "Select Directory", directory=self._backup_dir_path.text() ) )
-#         if dir:
-#             dir = os.path.abspath( dir )
-#             self.set_settings_value("backup_dir_path", dir)
-#             self._backup_dir_path.setText( dir )
-#             self._remove_duplicates_button.setEnabled( True )
-#         else:
-#             self._backup_dir_path.setText( "" )
-#             self._remove_duplicates_button.setEnabled( False )
-    
-#     def remove_duplicates(self):
-#         backup_dir = self._backup_dir_path.text()
-#         for hash, button_group in self._button_groups.items():
-#             rel_file_path_to_keep = button_group.checkedButton().objectName()
-#             for path_tuple in self._hashes[hash]:
-#                 abs_file_path, rel_file_path = path_tuple
-#                 if rel_file_path == rel_file_path_to_keep:
-#                     print(f'Would keep {rel_file_path}')
-#                     continue
-#                 else:
-#                     target_path = os.path.abspath( backup_dir + "/" + rel_file_path )
-#                     parent_backup_sub_dir = os.path.dirname( target_path )
-#                     os.makedirs( parent_backup_sub_dir, exist_ok=True )
-#                     print(f'Would move {abs_file_path} to {target_path}')
-#                     shutil.move( abs_file_path, target_path )
-#         self._clear_layout()
-        
-#         # self._layout.addWidget( self._text_widget )
-#         self._layout.addWidget(QLabel("Please process a directory first"))
-#         parent = self.parent()
-#         QtCore.QTimer.singleShot(20, lambda: self.parent().adjustSize() if parent.width() < self._layout.sizeHint().width() or parent.height() < self._layout.sizeHint().height() else None )
-
+        self._dry_run.setChecked(True)
+      
 class DicomFilter(FilterSubWindow):
     
     def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
@@ -684,9 +589,10 @@ class FesMainWindow(QMainWindow):
         self.create_sub_window( DicomFilter )
 
         # add processor
-        self.create_sub_window( Deduplicator )
-        self.create_sub_window( ChronologicSorter )
         self.create_sub_window( FilePrinter )
+        self.create_sub_window( ChronologicSorter )
+        self.create_sub_window( DirectoryComparer )
+        self.create_sub_window( Deduplicator )
 
         # finalize
         self.setCentralWidget(self._mdi)    
@@ -741,7 +647,7 @@ class FesMainWindow(QMainWindow):
 
         elif sub_window_class == ProcessorSubWindow:
             active_processor_name = fes_settings.value(f'active_processor', None)
-            print(f'active_processor: {active_processor_name}')
+            #print(f'active_processor: {active_processor_name}')
             sub_window_visible = sub_window.name() == active_processor_name
 
         self.set_sub_window_visible( sub_window, sub_window_visible )
@@ -873,10 +779,15 @@ class FesMainWindow(QMainWindow):
         active_filters:list[FilterSubWindow] = [ self._sub_window_by_class_and_name(FilterSubWindow, active_filter_name) for active_filter_name in active_filter_names]
 
         # get active processor
-        active_processor_name = fes_settings.value(f'active_processor', None)
+        active_processor_name = fes_settings.value(f'active_processor', None)        
         active_processor:ProcessorSubWindow = self._sub_window_by_class_and_name( ProcessorSubWindow, active_processor_name )
+        
         if active_processor:
-            active_processor.before_processing()
+            try:                    
+                active_processor.before_processing()
+            except Exception as e:                
+                progress_dialog.setLabelText(f'Error: {e}')
+                time.sleep(self.error_timeout())
 
         for i, file_info in enumerate(file_infos):            
             if progress_dialog.wasCanceled():
@@ -903,7 +814,11 @@ class FesMainWindow(QMainWindow):
             QApplication.processEvents()
 
         if active_processor:
-            active_processor.post_processing()
+            try:                    
+                active_processor.post_processing()
+            except Exception as e:                
+                progress_dialog.setLabelText(f'Error: {e}')
+                time.sleep(self.error_timeout())
         progress_dialog.close()
         progress_dialog = None
 
