@@ -10,7 +10,7 @@ from PyQt5.QtCore import Qt, QSettings, QEvent
 from PyQt5.QtWidgets import QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, \
     QListWidget, QFileDialog, QAbstractItemView, QMessageBox, QProgressDialog, QApplication, QLabel, QTextEdit, \
     QSplitter, QGroupBox, QMainWindow, QComboBox, QMdiArea, QMenu, QAction, QErrorMessage, QScrollArea, QButtonGroup, \
-    QRadioButton, QSizePolicy, QMdiSubWindow, QSpinBox, QDoubleSpinBox
+    QRadioButton, QSizePolicy, QMdiSubWindow, QSpinBox, QDoubleSpinBox, QCheckBox
 import pydicom
 
 # module variables
@@ -22,6 +22,11 @@ class FesSubWindow(QMdiSubWindow):
 
     def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
         QMdiSubWindow.__init__(self, parent, flags)
+
+        # restore state
+        geometry = self.settings_value("geometry")
+        if geometry is not None:
+            self.restoreGeometry( geometry )
 
     def main_window( self ) -> Union[None, "FesMainWindow"]:
         curr_object = self
@@ -39,6 +44,14 @@ class FesSubWindow(QMdiSubWindow):
         #settings.beginGroup(self.name())
         settings.setValue( self.__class__.__name__+"."+str(name), value)
     
+    def moveEvent(self, moveEvent: QtGui.QMoveEvent) -> None:
+        self.set_settings_value("geometry", self.saveGeometry())
+        return super().moveEvent(moveEvent)
+
+    def resizeEvent(self, resizeEvent: QtGui.QResizeEvent) -> None:
+        self.set_settings_value("geometry", self.saveGeometry())
+        return super().resizeEvent(resizeEvent)
+
     def closeEvent(self, a0: QtGui.QCloseEvent) -> None:
         #print("Close Event!")
         a0.ignore()
@@ -118,6 +131,25 @@ class FesConsoleSubWindow(BasicSubWindow):
     def reset( self ) -> "FesConsoleSubWindow":
         self._console_text_edit.setHtml("")
 
+class NotesSubWindow(BasicSubWindow):
+    def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
+        BasicSubWindow.__init__(self, parent, flags)
+
+        self._text_edit = QTextEdit()
+        self._text_edit.textChanged.connect( lambda: self.set_settings_value("text", self._text_edit.toPlainText()) )
+        self._text_edit.setText( self.settings_value("text", "") )
+
+        widget_layout = QVBoxLayout()
+        widget_layout.addWidget( self._text_edit )
+
+        widget = QWidget()
+        widget.setLayout( widget_layout )
+
+        self.setWidget( widget )
+
+    def name( self ) -> str:
+        return "Notes"
+
 class FesDirChooser(BasicSubWindow):
     """ The fundamental widget for choosing the base directory """
     def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
@@ -171,6 +203,9 @@ class FilePrinter(ProcessorSubWindow):
     def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
         ProcessorSubWindow.__init__(self, parent, flags)
         
+        self._num_dirs = 0
+        self._num_files = 0
+
         layout = QVBoxLayout()
         layout.addWidget(QLabel(self.description()))
         layout.addStretch()
@@ -184,11 +219,23 @@ class FilePrinter(ProcessorSubWindow):
         return "Prints the relative path and level for each file into the console"
     
     def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
-        self.main_window().console().append( f'{rel_file_path} (Level: {level})' )
+        if os.path.isdir( abs_file_path ):
+            prefix = "Directory"
+            self._num_dirs += 1
+        elif os.path.isfile( abs_file_path ):
+            prefix = "File"
+            self._num_files += 1
+        self.main_window().console().append( f'{prefix} {rel_file_path} at level {level})' )
 
     def before_processing( self ) -> None:
         self.main_window().console().reset()
         self.main_window().console().append("Items in directory <b>"+self.main_window().base_directory()+"</b>:")
+
+    def post_processing( self ) -> None:
+        self.main_window().console().append(f"Overall statistics for directory <b>"+self.main_window().base_directory()+"</b>:")
+        self.main_window().console().append(f"{self._num_dirs+self._num_files} items found")
+        self.main_window().console().append(f"{self._num_dirs} directories found")
+        self.main_window().console().append(f"{self._num_files} files found")
 
 class ChronologicSorter(ProcessorSubWindow):
     def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
@@ -209,17 +256,21 @@ class ChronologicSorter(ProcessorSubWindow):
         self._output_dir_path.setText( self.settings_value("output_dir_path") )
         select_output_dir_path_button = QPushButton("Change")
         select_output_dir_path_button.clicked.connect(self._select_output_dir_path)
-        self._text_widget = QTextEdit()
-        self._text_widget.setReadOnly( True )
+        file_action = QComboBox()
+        file_action.addItem("Move files")
+        file_action.addItem("Copy files")
+        file_action.setCurrentText( self.settings_value("file_action", "Move files") )
+        file_action.currentTextChanged.connect( lambda changed_text: self.set_settings_value("file_action", changed_text) )
         layout = QVBoxLayout()
 
         layout.addWidget(time_type_label)
         layout.addWidget(self._time_type)
+        layout.addWidget(QLabel("Select the appropriate action: "))
+        layout.addWidget(file_action)
         layout.addWidget(output_dir_path_label)
         layout.addWidget(self._output_dir_path)
         layout.addWidget(select_output_dir_path_button)
-        layout.addWidget(QLabel("Log:"))
-        layout.addWidget(self._text_widget)
+        layout.addStretch()
 
         widget = QWidget()
         widget.setLayout( layout )
@@ -232,6 +283,9 @@ class ChronologicSorter(ProcessorSubWindow):
     def description( self ) -> str:
         return "Sorts files in folders chronologically with its creation or modified date"
     
+    def before_processing( self ) -> None:
+        self.main_window().console().reset()
+
     def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
         if not os.path.isfile( abs_file_path ):
             return
@@ -249,16 +303,18 @@ class ChronologicSorter(ProcessorSubWindow):
 
         file_output_dir_path = os.path.abspath( output_dir_path + "/" + year_literal + "/" + month_literal )
         file_output_path = os.path.abspath( file_output_dir_path + "/" + os.path.basename( abs_file_path ) )
+        i = 1
+        while os.path.exists(file_output_path):
+            i += 1
+            file_name, ext = os.path.splitext(file_output_path)
+            file_output_path = file_name + f"_{i}" + ext
         #print( f'Would move {abs_file_path} to {file_output_path}')
         if not os.path.exists( file_output_dir_path ):
-            self._text_widget.append(f'Creating directory <b>{file_output_dir_path}</b>')
+            self.main_window().console().append(f'Creating directory <b>{file_output_dir_path}</b>')
             os.makedirs( file_output_dir_path, exist_ok= False )
-        self._text_widget.append(f'Moving <b>{rel_file_path}</b> to <b>{file_output_path}</b>')
-        shutil.move( abs_file_path, file_output_path )
-
-    def before_processing(self, base_directory: str) -> None:
-        self._text_widget.setHtml("")
-        return super().before_processing(base_directory)
+        file_action = self.settings_value("file_action", "Move files")
+        self.main_window().console().append(f'{"Moving" if file_action == "Move files" else "Copying"} <b>{rel_file_path}</b> to <b>{file_output_path}</b>')
+        shutil.move( abs_file_path, file_output_path ) if file_action == "Move files" else shutil.copy( abs_file_path, file_output_path )
 
     def _select_output_dir_path(self):
         dir = str (QFileDialog.getExistingDirectory(self, "Select Directory", directory=self._output_dir_path.text() ) )
@@ -270,6 +326,62 @@ class ChronologicSorter(ProcessorSubWindow):
             self._output_dir_path.setText( "" )
         
         self.set_settings_value("output_dir_path", dir)
+
+
+class Deduplicator(ProcessorSubWindow):
+    def __init__(self, parent=None, flags:Qt.WindowFlags=Qt.WindowFlags()):
+        ProcessorSubWindow.__init__(self, parent, flags)
+
+        # internal state
+        self._hasher:FileHash = None
+        self._hashes:list[str] = []
+        self._total_files = 0
+        self._files_removed = 0
+
+        # build widgets
+        self._dry_run = QCheckBox("Dry run")
+        self._dry_run.setChecked(True)
+
+        layout = QVBoxLayout()
+        layout.addWidget( QLabel( self.description() ) )
+        layout.addWidget( self._dry_run )
+        layout.addStretch()
+
+        widget = QWidget()
+        widget.setLayout( layout )
+
+        self.setWidget(widget)        
+
+    def description( self ) -> str:
+        return "Removes duplicate files from a directory"
+    
+    def before_processing( self ) -> None:
+        self._hasher = FileHash('md5')
+        self._hashes = []
+        self._total_files = 0
+        self._files_removed = 0
+        self.main_window().console().reset()
+        self.main_window().console().append(f'Removing duplicates in directory <b>{self.main_window().base_directory()}</b>')
+
+    def process( self, abs_file_path:str, rel_file_path:str, level:int ) -> bool:
+        if os.path.isfile( abs_file_path ):
+            hash = self._hasher.hash_file(abs_file_path)
+            self._total_files += 1
+            if hash in self._hashes:              
+                self._files_removed += 1
+                dry_run = self._dry_run.isChecked()
+                prefix = "[DRY RUN] Would remove" if dry_run else "Removing"
+                self.main_window().console().append(f'{prefix} duplicate file <b>{rel_file_path}</b> with hash {hash}')
+                if dry_run is False:
+                    os.remove( abs_file_path )
+            else:
+                self._hashes.append( hash )
+    
+    def post_processing(self) -> None:
+        dry_run = self._dry_run.isChecked()
+        prefix = "[DRY RUN] Would have removed" if dry_run else "Removed"
+        self.main_window().console().append(f'In directory {self.main_window().base_directory()}: {prefix} {self._files_removed} duplicates out of {self._total_files} files')
+        
 
 # class DeDuplicator(ProcessorSubWindow):
 #     def __init__(self, parent=None):
@@ -563,6 +675,7 @@ class FesMainWindow(QMainWindow):
         tile_action.triggered.connect( lambda checked: self._mdi.tileSubWindows() )
 
         # add basic subwindows
+        self.create_sub_window( NotesSubWindow )
         self.create_sub_window( FesConsoleSubWindow )
         self.create_sub_window( FesDirChooser )
 
@@ -571,6 +684,8 @@ class FesMainWindow(QMainWindow):
         self.create_sub_window( DicomFilter )
 
         # add processor
+        self.create_sub_window( Deduplicator )
+        self.create_sub_window( ChronologicSorter )
         self.create_sub_window( FilePrinter )
 
         # finalize
@@ -580,8 +695,9 @@ class FesMainWindow(QMainWindow):
 
         # restore
         maximized = fes_settings.value("maximized", False)
-        #print(f'maximized: {maximized}')
-        if maximized is True:
+        #print(f'maximized in ctor: {maximized}')
+        if maximized is not False:
+            #print(f'maximized in ctor 2: {maximized}')
             self.setWindowState( Qt.WindowMaximized )
 
     def create_sub_window(self, class_:type):
@@ -625,7 +741,7 @@ class FesMainWindow(QMainWindow):
 
         elif sub_window_class == ProcessorSubWindow:
             active_processor_name = fes_settings.value(f'active_processor', None)
-            #print(f'active_processor: {active_processor_name}')
+            print(f'active_processor: {active_processor_name}')
             sub_window_visible = sub_window.name() == active_processor_name
 
         self.set_sub_window_visible( sub_window, sub_window_visible )
@@ -644,17 +760,17 @@ class FesMainWindow(QMainWindow):
             if visible:
                 active_filter_names.append( sub_window.name() )  
                                       
-            #print(f'active_filter_names: {active_filter_names}')
+            #print(f'active_filters: {active_filter_names}')
             fes_settings.setValue(f'active_filters', active_filter_names)
+
         # save active processor (and disable the currently active)
-        elif sub_window.sub_window_class() == ProcessorSubWindow:
-            for action in menu.actions():
-                if action.isChecked() and action.text() != sub_window.name():
-                    self._set_sub_window_visible_by_class_and_name( ProcessorSubWindow, action.text(), False )
-                    break
-            
+        elif sub_window.sub_window_class() == ProcessorSubWindow and visible:
+            active_processor_name = fes_settings.value(f'active_processor', None)
+            if active_processor_name is not None and active_processor_name != sub_window.name():
+                self._set_sub_window_visible_by_class_and_name( ProcessorSubWindow, active_processor_name, False )
+                                
             active_processor_name = sub_window.name() if visible else None
-            #print(f'active_processor_name: {active_processor_name}')
+            print(f'active_processor: {active_processor_name}')
             fes_settings.setValue(f'active_processor', active_processor_name)
 
         # apply the state
@@ -793,8 +909,9 @@ class FesMainWindow(QMainWindow):
 
     def changeEvent(self, event):
         if event.type() == QEvent.WindowStateChange:
-            #print(f'self.windowState() == Qt.WindowMaximized: {self.windowState() == Qt.WindowMaximized}')
-            fes_settings.setValue("maximized", self.windowState() == Qt.WindowMaximized)
+            maximized = self.windowState() == Qt.WindowMaximized
+            #print(f'maximized in changeEvent(): {maximized}')
+            fes_settings.setValue("maximized", maximized)
 
     def _menu_by_class( self, sub_window:FesSubWindow ):
         menus_by_class = { BasicSubWindow: self._basic_tools_menu, FilterSubWindow: self._filters_menu, ProcessorSubWindow: self._processors_menu }
